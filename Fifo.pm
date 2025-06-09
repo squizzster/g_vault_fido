@@ -306,6 +306,8 @@ sub __fifo_fac_impl {                                   # ≤ 45 loc
     my $path=$rec->{path};
     if (my $fh=$g->{fh}{config}{$ino}){
 
+        my $pid;
+
         if (my $pids=__fifo_get_pid_open_files($path)){
             my $n=keys %$pids;
             if ($n>1){
@@ -316,10 +318,14 @@ sub __fifo_fac_impl {                                   # ≤ 45 loc
                           local $Data::Dumper::Indent=1;
                           Data::Dumper::Dumper($pids) };
                 print "\n",$pid_dump,"\n";
+                $pid = '{fix}';
+            }
+            elsif ( $n == 1 ) {
+                ($pid) = keys %$pids;  # List context: gets the only key
             }
         }
 
-        if (print $fh "[$path] [$ino] (" . time() . ").\n"){
+        if (print $fh "file=[$path] i=[$ino] pid=[$pid] t=(" . time() . ").\n"){
             $fh->flush or carp "flush failed for $path: $!";
         }else{ carp "write to FIFO $path failed: $!" }
     }else{ carp "no FH for FIFO $path during access" }
