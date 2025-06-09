@@ -134,44 +134,67 @@ sub __fifo_iwf_register {                                 # ≤ 30 loc
     return 1;
 }
 
-sub __fifo_iwf_retry_loop {                               # ≤ 50 loc
-    my ($g,$file,$type,$cb) = @_;
+##########################
+#  inotify_watch_file – robust retry loop (final)
+##########################
+sub __fifo_iwf_retry_loop {                                 # AI_ROBUST
+    my ($g, $file, $type, $cb) = @_;
 
-    if (my $err = __fifo_iwf_validate($file,$type,$cb)) { return error $err }
+    require Errno;                                         # symbolic %!
+    if ( my $e = __fifo_iwf_validate($file,$type,$cb) ) {  # early check
+        return error $e;
+    }
 
     my $mask = $type eq 'fifo'
-        ? IN_OPEN | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF
-        : IN_CLOSE_WRITE;
+             ? IN_OPEN | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF
+             : IN_CLOSE_WRITE;
 
-    my $attempt = 0;
+    my $attempt      = 0;
+    my $max_attempts = 5;                                  # bounded retries
   RETRY: {
-        $attempt++;
+        ++$attempt;
         my $ino_before = __fifo_get_inode($file)
             or return error "stat($file) failed before watch";
 
-        if (_rec_exists($g,$ino_before)) {
-            my $r = _rec($g,$ino_before);
-            return error "Inode [$ino_before] for [$file] is already watched (path: $r->{path})";
+        # Already watched?  Return the existing success.
+        if ( _rec_exists($g, $ino_before) ) {
+            my $r = _rec($g, $ino_before);
+            return 1 if $r->{path} eq $file;               # idempotent
+            return error "inode [$ino_before] already watched via $r->{path}";
         }
 
-        my $stable_ino;          # lexical captured by callback
-        my $watcher = __fifo_iwf_build_watch($g,$file,$mask,\$cb,\$stable_ino)
-            or return;           # error already logged
+        # We will *re-check* after the watch is installed.
+        my ($stable_ino, $watcher);
+        $watcher = __fifo_iwf_build_watch($g,$file,$mask,\$cb,\$stable_ino);
+
+        # ---------- NEW: tolerate only “vanished” races ----------
+        unless ($watcher) {
+            if ( ($!{ENOENT} || $!{ENOTDIR}) && $attempt < $max_attempts ) {
+                sleep 0.05;                                # back-off
+                goto RETRY;
+            }
+            return;                                        # error already logged
+        }
+        # ---------------------------------------------------------
 
         my $ino_after = __fifo_get_inode($file)
             or do { $watcher->cancel; return error "stat($file) failed after watch" };
 
-        if ($ino_after != $ino_before) {                  # inode raced
+        # --------------- NEW: still the *same* file? ---------------
+        if ($ino_after != $ino_before) {
+            # If the file changed during our retry cycle, start fresh.
             $watcher->cancel;
-            goto RETRY if $attempt < 5;                   # AI_GOOD – identical policy
-            return error "Could not obtain stable inode for [$file]";
+            goto RETRY if $attempt < $max_attempts;
+            return error "File at [$file] kept changing – could not obtain stable inode";
         }
+        # -----------------------------------------------------------
 
-        $stable_ino = $ino_after;
+        $stable_ino = $ino_after;                           # captured for cb
         __fifo_iwf_register($g,$stable_ino,$file,$type,$watcher,$cb);
     }
     return 1;
 }
+
 
 ##########################
 #  fifo_add – wrapper    #
@@ -292,12 +315,12 @@ sub __fifo_fac_impl {                                   # ≤ 45 loc
             my $n=keys %$pids;
             if ($n>1){
                 info "Open PIDs for [$path]: $n";
-                my $dump = eval{require Data::Dump;1}
+                my $pid_dump = eval{require Data::Dump;1}
                     ? Data::Dump::dump($pids)
                     : do{ require Data::Dumper;
                           local $Data::Dumper::Indent=1;
                           Data::Dumper::Dumper($pids) };
-                print "\n",$dump,"\n";
+                print "\n",$pid_dump,"\n";
             }
         }
 
@@ -319,6 +342,7 @@ sub __fifo_fac_impl {                                   # ≤ 45 loc
 ###############################
 sub __fifo_inotify_event {                               # AI_GOOD
     my ($g,@args)=@_;
+    ## for dev: print STDERR dump \@args;
     return __fifo_ie_dispatch($g,@args);
 }
 
@@ -348,33 +372,51 @@ sub __fifo_mask_str {                                 # ≤ 25 loc
     return @n ? join '|', sort @n : sprintf "0x%X",$m;
 }
 
-sub __fifo_ie_overflow {                              # ≤ 45 loc
-    my ($g,$event) = @_;
-    error "inotify queue overflow – rebuilding all watches in place";
+sub __fifo_ie_overflow {                                   # AI_ROBUST
+    my ($g, $event) = @_;
+    error "inotify queue overflow – rebuilding all watches";
 
-    my $inotify = __fifo_inotify_init($g);
+    # ---------- 1.  Take a snapshot of desired watches ----------
+    my @snapshot;
+    while ( my ($ino,$rec) = each %{ $g->{monitor} } ) {
+        push @snapshot, {
+            path => $rec->{path},
+            type => $rec->{type},
+            cb   => $rec->{system_event_cb},   # undef for fifo
+        };
+        # Defensive: cancel and clear watcher to avoid FD leaks
+        if ($rec->{watcher}) {
+            eval { $rec->{watcher}->cancel };
+            $rec->{watcher} = undef;
+        }
+    }
 
-    my %old = %{ $g->{monitor} };      # snapshot
-    for my $key (keys %old){
-        my $rec = $old{$key};
-        my ($path,$type,$cb) = @$rec{qw/path type system_event_cb/};
+    # Clear state entirely; safer than incremental repair.
+    %{ $g->{monitor} }    = ();
+    %{ $g->{fh}{config} } = ();
+    $g->{_inotify}        = {};    # reset inotify handle storage
 
-        $rec->{watcher}->cancel if $rec->{watcher};
+    # Re-initialise the inotify handle (fresh fd)
+    __fifo_inotify_init($g) or return;
 
-        my $re_mask = $type eq 'fifo'
-            ? IN_OPEN | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF
-            : IN_CLOSE_WRITE;
-
-        my $new_w = $inotify->watch(
-            $path,$re_mask,
-            sub{ my $ev=shift; __fifo_inotify_event($g,$ev,$key) },
-        );
-
-        if ($new_w){ $rec->{watcher}=$new_w }
-        else { error "Failed to re-watch [$path] after overflow: $!" }
+    # ---------- 2.  Rebuild every watch using public helpers ------
+    for my $s (@snapshot) {
+        if ($s->{type} eq 'fifo') {
+            unless ( __fifo_fifo_add($g, $s->{path}) ) {
+                error "Failed to re-add FIFO [$s->{path}] after overflow";
+            }
+        }
+        else {   # 'system'
+            unless ( __fifo_inotify_watch_file($g,
+                       $s->{path}, 'system', $s->{cb}) )
+            {
+                error "Failed to re-watch system file [$s->{path}] after overflow";
+            }
+        }
     }
     return;
 }
+
 
 sub __fifo_ie_ignored {                              # ≤ 20 loc
     my ($g,$ev_path,$ino) = @_;
@@ -471,4 +513,3 @@ sub _with_root {                                       # AI_GOOD
 }
 
 1;
-

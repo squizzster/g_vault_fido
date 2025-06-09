@@ -7,6 +7,12 @@ use lib $FindBin::Bin;     # look next to this script
 use Fifo;
 use Data::Dump qw(dump);
 
+
+# --- THIS IS THE CRUCIAL PART ---
+use Log::Any::Adapter;
+# Send all log messages (including errors from Fifo.pm) to STDERR
+Log::Any::Adapter->set('Stderr');
+
 #--------------------------------------------------------------------------#
 # GLOBAL STATE – passed everywhere by reference
 #--------------------------------------------------------------------------#
