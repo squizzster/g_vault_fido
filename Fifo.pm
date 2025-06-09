@@ -3,7 +3,7 @@
 #  All externally-visible behaviour is preserved (Law 1: Observable Fidelity)
 #  This code was not written with AI,
 #      it was re-factored with AI as per THE 5 x LAWS of RE-FACTOR.
-#                  (my laws anyway, prompt is available)
+#                             (my laws)
 # (in the end, ALL code is 100% AI generated, but never actually *generated*)
 #############################################################################
 package Fifo;
@@ -319,7 +319,7 @@ sub __fifo_fac_impl {                                   # ≤ 45 loc
             }
         }
 
-        if (print $fh "$path\n"){
+        if (print $fh "[$path] [$ino] (" . time() . ").\n"){
             $fh->flush or carp "flush failed for $path: $!";
         }else{ carp "write to FIFO $path failed: $!" }
     }else{ carp "no FH for FIFO $path during access" }
