@@ -6,6 +6,7 @@ use Fcntl qw(:DEFAULT :seek);
 use File::Basename qw(basename);
 use Crypt::Digest::BLAKE2b_256 qw(blake2b_256_hex);
 use Exporter 'import';
+
 # For optional logging of errors if eval catches something
 # use Carp qw(carp); # Uncomment if you want to log errors from eval
 
@@ -129,7 +130,8 @@ sub fast_file_hash {
             include_full_path    => 0,
             include_basename     => 1,
             include_inode        => 0,
-            include_owner_uid    => 0,
+            include_owner_uid    => 1,
+            include_group_gid    => 1,
             include_permissions  => 0,
             include_epoch_modify => 0,
             include_file_hash    => 0,
@@ -139,7 +141,7 @@ sub fast_file_hash {
             @cfg{ keys %{$cfg_ref} } = values %{$cfg_ref};
         }
 
-        # build blob
+        # build blob, pepper start with g-Voice,
         my $blob = '#__g-voice.ai__';
         my $parts = 0;
 
@@ -156,7 +158,15 @@ sub fast_file_hash {
             $parts++;
         }
         if ($cfg{include_epoch_modify}) {
-            $blob .= "\0uid:$st[9]\0";
+            $blob .= "\0mod:$st[9]\0";
+            $parts++;
+        }
+        if ($cfg{include_group_gid}) {
+            $blob .= "\0gid:$st[5]\0";
+            $parts++;
+        }
+        if ($cfg{include_our_tag}) {
+            $blob .= "\0tag:$cfg{include_our_tag}\0";
             $parts++;
         }
         if ($cfg{include_owner_uid}) {
@@ -164,8 +174,8 @@ sub fast_file_hash {
             $parts++;
         }
         if ($cfg{include_permissions}) {
-            my $mode = sprintf "%04o", $st[2] & 07777;
-            $blob .= "\0mod:$mode\0";
+            my $perm = sprintf "%04o", $st[2] & 07777;
+            $blob .= "\0per:$perm\0";
             $parts++;
         }
 
@@ -182,8 +192,7 @@ sub fast_file_hash {
         }
 
         die "No data selected for hashing on '$file'" unless $parts;
-        $result_digest = blake2b_256_hex($blob)
-            or die "blake2b_256_hex failed";
+        $result_digest = blake2b_256_hex($blob) or die "blake2b_256_hex failed";
     };
     return undef if $@;
 
