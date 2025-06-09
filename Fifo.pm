@@ -1,7 +1,11 @@
-############################################################################
+#############################################################################
 #  Fifo.pm – Law-abiding, 1-to-1 fidelity refactor
 #  All externally-visible behaviour is preserved (Law 1: Observable Fidelity)
-############################################################################
+#  This code was not written with AI,
+#      it was re-factored with AI as per THE 5 x LAWS of RE-FACTOR.
+#                  (my laws anyway, prompt is available)
+# (in the end, ALL code is 100% AI generated, but never actually *generated*)
+#############################################################################
 package Fifo;
 
 use strict;
@@ -38,23 +42,14 @@ sub _rec_exists { my ($g,$ino)=@_;    exists $g->{monitor}{$ino} }
 # ------------------------------------------------------------------ #
 # Public API – thin wrappers delegating to refactored helpers        #
 # ------------------------------------------------------------------ #
-
 sub get_inode          { return __fifo_get_inode(@_) }           # ≤ 20 loc
-
 sub inotify_init       { return __fifo_inotify_init(@_) }        # ≤ 20 loc
-
 sub inotify_watch_file { return __fifo_inotify_watch_file(@_) }  # wrapper ≤ 10 loc
-
 sub fifo_add           { return __fifo_fifo_add(@_) }            # wrapper ≤ 10 loc
-
 sub fifo_rm            { return __fifo_fifo_rm(@_) }             # unchanged small
-
 sub fifo_access_and_cycle { return __fifo_fifo_access_and_cycle(@_) }
-
 sub inotify_event      { return __fifo_inotify_event(@_) }
-
 sub get_pid_open_files { return __fifo_get_pid_open_files(@_) }  # unchanged small
-
 
 # ------------------------------------------------------------------ #
 # ==================  INTERNAL IMPLEMENTATION SECTION  ==============#
@@ -201,7 +196,7 @@ sub __fifo_iwf_retry_loop {                                 # AI_ROBUST
 ##########################
 sub __fifo_fifo_add {                                    # AI_GOOD
     my ($g,@args) = @_;
-    return __fifo_fa_promote($g,@args);                   # single-entry
+    return __fifo_fa_promote($g,@args);                  # single-entry
 }
 
 # ------- helpers for fifo_add --------#
@@ -295,7 +290,7 @@ sub __fifo_fifo_rm {                                    # AI_GOOD
 #####################################
 #  fifo_access_and_cycle – wrapper  #
 #####################################
-sub __fifo_fifo_access_and_cycle {                       # AI_GOOD
+sub __fifo_fifo_access_and_cycle {                      # AI_GOOD
     my ($g,@args)=@_;
     return __fifo_fac_impl($g,@args);
 }
