@@ -3,96 +3,191 @@ package fast_file_hash;
 use strict;
 use warnings;
 use Fcntl qw(:DEFAULT :seek);
+use File::Basename qw(basename);
 use Crypt::Digest::BLAKE2b_256 qw(blake2b_256_hex);
 use Exporter 'import';
+# For optional logging of errors if eval catches something
+# use Carp qw(carp); # Uncomment if you want to log errors from eval
+
 our @EXPORT_OK = qw(fast_file_hash);
 
 #------------------------------------------------------------------------------
-# OBJECTIVE:
-#   Generate a robust hash of a file while minimizing I/O syscalls.
-#   Always return a hex digest or undef on failure.
-#
-# STRATEGY:
-#   • For files up to (FIRST + MID_TOTAL + LAST + SLOP) — read the entire file
-#     in one go (minimal syscalls).
-#   • For larger files — sample only MID_TOTAL + FIRST + LAST bytes via:
-#       1) FIRST bytes from the start
-#       2) MID_CHUNKS evenly spaced chunks totaling MID_TOTAL bytes in middle
-#       3) LAST bytes from the end
-#   • This sampling pattern maximizes detection of localized modifications
-#     (e.g., hidden ELF tweaks) while keeping I/O overhead low.
-#   • Explicitly validate each sysread/sysseek for exact byte counts.
-#   • Accumulate directly into a single buffer, then hash once with BLAKE2b-256.
+# Constants for sampling-based content collection
 #------------------------------------------------------------------------------
-
-
 use constant {
-    FIRST      => 100 * 1024,    # FIRST bytes to read
-    MID_TOTAL  => 100 * 1024,    # total middle sample bytes
-    LAST       => 100 * 1024,    # LAST bytes to read
-    MID_CHUNKS => 100,           # number of middle sample slices
-    SLOP       => 100 * 1024,    # extra slop bytes to expand slurp threshold
+    FIRST      => 100 * 1024,  # bytes from start
+    MID_TOTAL  => 100 * 1024,  # total middle sample bytes
+    LAST       => 100 * 1024,  # bytes from end
+    MID_CHUNKS => 100,         # number of middle chunks
+    SLOP       => 100 * 1024,  # extra threshold slop for deciding full read vs sample
 };
 
-sub fast_file_hash {
+#------------------------------------------------------------------------------
+# _collect_samples: read or sample a file's content and return raw bytes
+#------------------------------------------------------------------------------
+sub _collect_samples {
     my ($file) = @_;
-    return undef unless defined $file;
-
-    # Determine file size
     my $size = -s $file;
-    return undef unless defined $size;
+       return undef unless defined $size;    # non-existent/inaccessible
 
-    # Open once in raw mode
     sysopen my $fh, $file, O_RDONLY or return undef;
     binmode $fh;
 
-    # Compute parameters
     my $threshold = FIRST + MID_TOTAL + LAST + SLOP;
-    my $mid_chunk = int(MID_TOTAL / MID_CHUNKS) || 1;
+    my $mid_chunk = (MID_CHUNKS > 0 && MID_TOTAL > 0)
+                  ? (int(MID_TOTAL / MID_CHUNKS) || 1)
+                  : 0;
 
-    my ($buf, $bytes);
+    my ($buf, $bytes_read);
     my $collector = '';
 
     if ($size <= $threshold) {
-        # SMALL FILE: read all bytes in one go
-        $bytes = sysread($fh, $buf, $size);
+        # small file: slurp whole thing
+        $bytes_read = sysread($fh, $buf, $size);
         close $fh;
-        return undef unless defined $bytes && $bytes == $size;
+        return undef unless defined $bytes_read && $bytes_read == $size;
         $collector .= $buf;
     }
     else {
-        # LARGE FILE: three-stage sampling
-
-        # 1) read FIRST bytes
-        $bytes = sysread($fh, $buf, FIRST);
-        return undef unless defined $bytes && $bytes == FIRST;
+        # 1) FIRST bytes
+        $bytes_read = sysread($fh, $buf, FIRST);
+        return undef unless defined $bytes_read && $bytes_read == FIRST;
         $collector .= $buf;
 
-        # 2) sample MID_TOTAL bytes in MID_CHUNKS slices
-        my $range = $size - FIRST - LAST;
-        my $step  = $range / MID_CHUNKS;
-        for my $i (0 .. MID_CHUNKS - 1) {
-            my $off = FIRST + int($step * $i);
-            # prevent overlapping into LAST bytes
-            if ($off + $mid_chunk > $size - LAST) {
-                $off = $size - LAST - $mid_chunk;
+        # 2) MID_CHUNKS samples
+        if ($mid_chunk > 0) {
+            my $range = $size - FIRST - LAST;
+            my $step  = (MID_CHUNKS > 1 && $range > 0)
+                      ? $range / (MID_CHUNKS - 1)
+                      : 0;
+
+            for my $i (0 .. MID_CHUNKS - 1) {
+                my $offset_in_range;
+                if (MID_CHUNKS == 1) {
+                    $offset_in_range = int($range/2) - int($mid_chunk/2);
+                    $offset_in_range = 0 if $offset_in_range < 0;
+                } else {
+                    $offset_in_range = int($step * $i);
+                }
+
+                my $off = FIRST + $offset_in_range;
+                $off = $size - LAST - $mid_chunk if $off + $mid_chunk > $size - LAST;
+                $off = FIRST             if $off < FIRST;
+
+                # ensure valid
+                if ($off < FIRST || $off + $mid_chunk > $size - LAST) {
+                    close $fh;
+                    return undef;
+                }
+
+                sysseek($fh, $off, SEEK_SET) or (close $fh, return undef);
+                $bytes_read = sysread($fh, $buf, $mid_chunk);
+                return undef unless defined $bytes_read && $bytes_read == $mid_chunk;
+                $collector .= $buf;
             }
-            sysseek($fh, $off, SEEK_SET) or return undef;
-            $bytes = sysread($fh, $buf, $mid_chunk);
-            return undef unless defined $bytes && $bytes == $mid_chunk;
-            $collector .= $buf;
         }
 
-        # 3) read LAST bytes
-        sysseek($fh, $size - LAST, SEEK_SET) or return undef;
-        $bytes = sysread($fh, $buf, LAST);
+        # 3) LAST bytes
+        sysseek($fh, $size - LAST, SEEK_SET) or (close $fh, return undef);
+        $bytes_read = sysread($fh, $buf, LAST);
         close $fh;
-        return undef unless defined $bytes && $bytes == LAST;
+        return undef unless defined $bytes_read && $bytes_read == LAST;
         $collector .= $buf;
     }
 
-    # Hash once with hex output
-    return blake2b_256_hex($collector);
+    return $collector;
+}
+
+#------------------------------------------------------------------------------
+# _safe_stat: single stat invocation, returns arrayref or undef
+#------------------------------------------------------------------------------
+sub _safe_stat {
+    my ($file) = @_;
+    my @st = stat $file;
+    return undef unless @st;
+    return \@st;
+}
+
+#------------------------------------------------------------------------------
+# fast_file_hash: composite fingerprint using metadata and/or raw content
+#------------------------------------------------------------------------------
+sub fast_file_hash {
+    my ($file, $cfg_ref) = @_;
+
+    return undef unless defined $file;
+
+    my $result_digest;
+    eval {
+        # stat & size
+        my $stref = _safe_stat($file)
+            or die "_safe_stat failed for '$file': $!";
+        my @st   = @$stref;
+        my $size = $st[7];
+
+        # default config
+        my %default_cfg = (
+            include_full_path    => 0,
+            include_basename     => 1,
+            include_inode        => 0,
+            include_owner_uid    => 0,
+            include_permissions  => 0,
+            include_epoch_modify => 0,
+            include_file_hash    => 0,
+        );
+        my %cfg = %default_cfg;
+        if (defined $cfg_ref && ref $cfg_ref eq 'HASH') {
+            @cfg{ keys %{$cfg_ref} } = values %{$cfg_ref};
+        }
+
+        # build blob
+        my $blob = '#__g-voice.ai__';
+        my $parts = 0;
+
+        if ($cfg{include_full_path}) {
+            $blob .= "\0fn:$file\0";
+            $parts++;
+        }
+        if ($cfg{include_basename}) {
+            $blob .= "\0bn:" . basename($file) . "\0";
+            $parts++;
+        }
+        if ($cfg{include_inode}) {
+            $blob .= "\0ino:$st[1]\0";
+            $parts++;
+        }
+        if ($cfg{include_epoch_modify}) {
+            $blob .= "\0uid:$st[9]\0";
+            $parts++;
+        }
+        if ($cfg{include_owner_uid}) {
+            $blob .= "\0uid:$st[4]\0";
+            $parts++;
+        }
+        if ($cfg{include_permissions}) {
+            my $mode = sprintf "%04o", $st[2] & 07777;
+            $blob .= "\0mod:$mode\0";
+            $parts++;
+        }
+
+        if ($cfg{include_file_hash}) {
+            $blob .= "\0dat:";
+            if ($size == 0) {
+                $blob .= "EMPTY\0";
+            } else {
+                my $samples = _collect_samples($file)
+                    or die "_collect_samples failed for '$file'";
+                $blob .= $samples . "\0";
+            }
+            $parts++;
+        }
+
+        die "No data selected for hashing on '$file'" unless $parts;
+        $result_digest = blake2b_256_hex($blob)
+            or die "blake2b_256_hex failed";
+    };
+    return undef if $@;
+
+    return $result_digest;
 }
 
 1;
