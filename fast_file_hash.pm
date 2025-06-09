@@ -6,6 +6,7 @@ use Fcntl qw(:DEFAULT :seek);
 use File::Basename qw(basename);
 use Crypt::Digest::BLAKE2b_256 qw(blake2b_256_hex);
 use Exporter 'import';
+use Data::Dump qw(dump);
 
 # For optional logging of errors if eval catches something
 # use Carp qw(carp); # Uncomment if you want to log errors from eval
@@ -132,14 +133,17 @@ sub fast_file_hash {
             include_inode        => 0,
             include_owner_uid    => 1,
             include_group_gid    => 1,
-            include_permissions  => 0,
+            include_permissions  => 1,
             include_epoch_modify => 0,
             include_file_hash    => 0,
+            include_our_tag      => ''
         );
         my %cfg = %default_cfg;
         if (defined $cfg_ref && ref $cfg_ref eq 'HASH') {
             @cfg{ keys %{$cfg_ref} } = values %{$cfg_ref};
         }
+
+        # #dev only # print STDERR "\n\n" . ( dump \%cfg);
 
         # build blob, pepper start with g-Voice,
         my $blob = '#__g-voice.ai__';

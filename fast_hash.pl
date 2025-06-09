@@ -9,7 +9,7 @@ use Data::Dump qw(dump);
 
 use fast_file_hash qw(fast_file_hash);
 
-# Default configuration: only basename (as per module default)
+# configuration:
 my %config = (
     include_full_path    => 0,                   # full filename (e.g. /foo/bar/baz)
     include_basename     => 1,                   # base filename (e.g. baz)
@@ -19,7 +19,7 @@ my %config = (
     include_epoch_modify => 0,                   # Modify date/time epoch
     include_permissions  => 1,                   # file mode (octal e.g. 0755)
     include_file_hash    => 0,                   # actual file content hash
-    include_our_tag      => 'My Company Name',   # recommended; should be unique across your estate, company, host, server, your choice...
+    include_our_tag      => '',                  # should be unique across your estate, company, host, server, your choice. (can be '').
 );
 
 #%config = ();
