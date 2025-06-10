@@ -321,7 +321,7 @@ sub __fifo_fac_impl {                                   # ≤ 45 loc
                 $pid = '{fix}';
             }
             elsif ( $n == 1 ) {
-                ($pid) = keys %$pids;  # List context: gets the only key
+                ($pid) = keys %$pids;  # gets the only key, which is 1 x $pid
             }
         }
 
