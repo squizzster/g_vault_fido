@@ -5,7 +5,7 @@ use warnings;
 
 use Carp           qw(croak);
 use Crypt::PRNG    qw(random_bytes);
-BEGIN { require Digest::BLAKE2; Digest::BLAKE2->import('blake2b') }
+use Crypt::Digest::BLAKE2b_256 qw(blake2b_256 blake2b_256_hex);
 
 use constant {
     MASTER_SECRET_LEN => 512,
@@ -22,7 +22,7 @@ my $_apply = sub { my ($m,$p,$b)=@_;
 };
 my $_mac = sub {
     my ($k,$ob,$i)=@_;
-    substr blake2b("CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
+    substr blake2b_256("CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
 };
 
 #────────────────────────────────────────────────────────────────────
@@ -41,13 +41,13 @@ sub build_cipher_ring {
     return (undef, 'Master secret wrong length')
         unless length($master) == MASTER_SECRET_LEN;
 
-    my $name_hash_hex = unpack 'H*', substr( blake2b($name), 0, 32 );
+    my $name_hash_hex = blake2b_256_hex($name);
     my $mac_key       = random_bytes(MAC_KEY_LEN);
 
     my @bytes = unpack 'C*', $master;
     my (@closures,@next_ref);
     for my $i (0..$#bytes) {
-        my $seed = blake2b($master.pack('N',$i),'',2);
+        my $seed = substr(blake2b_256($master.pack('N',$i)), 0, 2);
         my ($mr,$pr)=unpack 'CC',$seed;
         my $mode  = $mr % 4;
         my $param = $mode==1 ? 1+($pr%7) : $pr;

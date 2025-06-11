@@ -35,4 +35,3 @@ sub save_cipher_ring {
     close $fh;
 }
 1;
-

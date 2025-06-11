@@ -83,4 +83,3 @@ sub get_cached_ring {    # accessor
     return $CACHED_RING{$hash};
 }
 1;
-

@@ -7,9 +7,8 @@ use Scalar::Util qw(refaddr);
 use Crypt::PRNG                      qw(random_bytes);
 use Crypt::AuthEnc::ChaCha20Poly1305 qw(chacha20poly1305_encrypt_authenticate);
 use Crypt::KeyDerivation             qw(hkdf);
-BEGIN { require Digest::BLAKE2; Digest::BLAKE2->import('blake2b') }
+use Crypt::Digest::BLAKE2b_256       qw(blake2b_256 blake2b_256_hex);
 use Math::Random::MT;
-use gv_l ();
 use Carp qw(croak);
 
 use constant {
@@ -41,11 +40,11 @@ my $_undo = sub { my ($m,$p,$b)=@_;
 };
 my $_mac = sub {
     my ($k,$ob,$i)=@_;
-    substr blake2b("CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
+    substr blake2b_256("CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
 };
 my $_det = sub {
     my ($seed)=@_;
-    my $h = blake2b($seed,'',DPRNG_SEED_HASH_LEN);
+    my $h = blake2b_256($seed,'',DPRNG_SEED_HASH_LEN);
     my @i = unpack 'N*',$h;
     my $mt = Math::Random::MT->new(@i);
     pack 'N*', map { $mt->irand } 1..(DETERMINISTIC_COMPONENT_LEN/4);
@@ -92,7 +91,7 @@ sub encrypt {
     return (undef,ERR_INVALID_INPUT) unless defined($pep) && length($pep)==PEPPER_LEN;
     return (undef,ERR_INVALID_INPUT) unless defined $name;
 
-    my $name_hash = unpack 'H*', substr( blake2b($name), 0, 32 );
+    my $name_hash = blake2b_256_hex($name);
     my $ring      = gv_l::get_cached_ring($name_hash)
         or return (undef,ERR_RING_NOT_AVAILABLE);
 
