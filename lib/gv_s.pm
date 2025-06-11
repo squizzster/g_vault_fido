@@ -31,7 +31,6 @@ sub save_cipher_ring {
         print {$fh} join("\t",
             $d{index},
             $d{stored_byte},
-            encode_base64($d{mac},''),
             $d{mode},
             (defined $d{param} ? $d{param} : ''),
         ), "\n";

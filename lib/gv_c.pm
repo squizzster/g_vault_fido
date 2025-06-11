@@ -14,17 +14,14 @@ use constant {
     BLAKE_MAC_TAG     => pack("H*", 'ee4bcef77cb49c70f31de849dccaab24'),
 };
 
+use constant BLAKE_MAC_TMP => "_" x MAC_OUTPUT_LEN;
+
 # helpers
 my $_apply = sub { my ($m,$p,$b)=@_;
     return ($b ^ $p)                      if $m==0;
     return (($b<<$p)|($b>>(8-$p))) & 0xFF if $m==1;
     return ($b + $p) & 0xFF               if $m==2;
     return (~$b) & 0xFF;
-};
-my $_mac = sub {
-    return ' ' x MAC_OUTPUT_LEN;
-    my ($k,$ob,$i)=@_;
-    substr Crypt::Digest::BLAKE2b_256::blake2b_256(BLAKE_MAC_TAG . "CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
 };
 
 #────────────────────────────────────────────────────────────────────
@@ -56,7 +53,6 @@ sub build_cipher_ring {
         $param    = 0 if $mode==3;
 
         my $stored = $_apply->($mode,$param,$bytes[$i]);
-        my $mac    = $_mac->($mac_key,$bytes[$i],$i);
 
         my $next;
         push @next_ref, \$next;
@@ -64,7 +60,6 @@ sub build_cipher_ring {
             return (
                 index       => $i,
                 stored_byte => $stored,
-                mac         => $mac,
                 mode        => $mode,
                 param       => $param,
                 next_node   => $next,

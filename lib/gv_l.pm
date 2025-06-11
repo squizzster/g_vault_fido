@@ -57,16 +57,16 @@ sub gv_l {
         
             # --- tab count check before splitting ---
             my $tab_count = () = $line =~ /\t/g;
-            if ($tab_count < 4) {
+            if ($tab_count < 3) {
                 carp "Malformed node.";
                 close $fh;
                 return;
             }
         
-            my ($idx,$sb,$mac_b64,$mode,$param) = split /\t/, $line, 5;
+            my ($idx,$sb,$mode,$param) = split /\t/, $line, 5;
         
             # --- check required fields are defined ---
-            for my $field ($idx, $sb, $mac_b64, $mode) {
+            for my $field ($idx, $sb, $mode) {
                 unless (defined $field && length $field) {
                     carp "Malformed node.";
                     close $fh;
@@ -74,14 +74,11 @@ sub gv_l {
                 }
             }
         
-            my $mac = decode_base64($mac_b64);
-        
             my $next;
             my $closure = sub {
                 return (
                     index       => 0+$idx,
                     stored_byte => 0+$sb,
-                    mac         => $mac,
                     mode        => $mode,
                     param       => $param,
                     next_node   => $next,

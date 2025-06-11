@@ -42,11 +42,6 @@ my $_undo = sub { my ($m,$p,$b)=@_;
     return ($b - $p) & 0xFF               if $m==2;
     return (~$b) & 0xFF;
 };
-my $_mac = sub {
-    return ' ' x MAC_OUTPUT_LEN;
-    my ($k,$ob,$i)=@_;
-    substr Crypt::Digest::BLAKE2b_256::blake2b_256(BLAKE_MAC_TAG . "CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
-};
 my $_det = sub {
     my ($seed)=@_;
     # Now includes DET_TAG
@@ -70,7 +65,6 @@ my $_recover = sub {
     while ($n && !$seen{refaddr($n)}++) {
         my %d = $n->();
         my $orig = $_undo->($d{mode},$d{param},$d{stored_byte});
-        return (undef,'MAC mismatch') if $_mac->($k,$orig,$d{index}) ne $d{mac};
         my $pep = $orig ^ $pb[$d{index}%PEPPER_LEN];
         push @out, $pep ^ $sb[$d{index}%DYNAMIC_SALT_LEN];
         $n = $d{next_node};
