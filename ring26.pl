@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 #----------------------------------------------------------------------#
-#  crypto_ring_ivy_v2.pl – "Super‑ring" ChaCha20‑Poly1305 engine
+#  crypto_ring_ivy_v2.pl – "Super-ring" ChaCha20-Poly1305 engine
 #
 #  [HIGH-LEVEL COMMENT BLOCK]
 #  ---------------------------------------------------------------------
@@ -104,7 +104,7 @@ my $_selftest_replan_ref;
 my $_cli_demo_ref;
 
 #-----------------------------------------------------------------------
-#  Reversible 8‑bit operations
+#  Reversible 8-bit operations
 #-----------------------------------------------------------------------
 $_apply_transform_ref = sub {
     my ($mode, $param, $byte) = @_;
@@ -179,12 +179,18 @@ $build_cipher_ring_ref = sub {
         ${$next_ref[$i]} = $closures[($i + 1) % @closures];
     }
 
+    use List::Util qw(shuffle);
+    my @order = shuffle(0..511);
+
+    # Find node 0, set entry
+    my ($pos_node0) = grep { $order[$_] == 0 } 0..$#order;
+
     my $ring_object = {
-        first_node        => $closures[0],
-        mac_key           => $base_mac_key_for_nodes,
+        first_node => $closures[$order[$pos_node0]],
+        mac_key    => $base_mac_key_for_nodes,
     };
-    
-    return ($ring_object, undef); # Success
+    return ($ring_object, undef);
+
 };
 
 #-----------------------------------------------------------------------
@@ -486,7 +492,7 @@ $_selftest_replan_ref = sub {
     
     my ($round_trip1, $err_dec1) = $decrypt_ref->(ring_object=>$ring, ciphertext_blob=>$blob1, pepper=>$pepper, aad=>$aad_ok);
     Test::More::ok(!$err_dec1 && defined $round_trip1, '1b. decrypt success') or Test::More::diag("Decrypt error: $err_dec1");
-    Test::More::is($round_trip1, $plain, '1c. round‑trip plaintext matches');
+    Test::More::is($round_trip1, $plain, '1c. round-trip plaintext matches');
 
     # Test 2: Decryption fails with wrong dynamic salt (manipulated blob)
     my $dynamic_salt_for_blob2 = $generate_dynamic_salt_ref->(); 
@@ -563,47 +569,63 @@ $_selftest_replan_ref = sub {
 #  CLI harness - UPDATED for new error handling
 #-----------------------------------------------------------------------
 $_cli_demo_ref = sub {
-    #my $master_secret = random_bytes(MASTER_SECRET_LEN);
-    #my ($ring, $err_build) = $build_cipher_ring_ref->($master_secret);
-    #if ($err_build) {
-    #    say "CLI Demo: CRITICAL - Failed to build ring: $err_build. Aborting demo.";
-    #    return;
-    #}
-    
-    my $ring = load_cipher_ring("/tmp/ring.json");
+    my $master_secret = random_bytes(MASTER_SECRET_LEN);
+    $master_secret = 'MY_SECRET_IS_NOT_SECURE_AT_ALL_AND_YOU_CAN_FIND_IT_EASILY_IN_MEMORY_BECAUSE_IT_IS_MADE_OF_EASY_TO_READ_WORDS_WITHOUT_ANY_COMPLEXITY_OR_ENTROPY_SO_DO_NOT_USE_THIS_IN_PRODUCTION_SINCE_IT_IS_MEANT_FOR_DEBUGGING_OR_MEMORY_ANALYSIS_ONLY_THIS_IS_A_PLACEHOLDER_NOT_A_REAL_SECRET_SO_PLEASE_REPLACE_IT_WITH_A_STRONG_RANDOM_KEY_BEFORE_DEPLOYMENT_OTHERWISE_YOU_ARE_RISKING_YOUR_SYSTEM_SECURITYEXTEND_WITH_EASY_TO_FIND_READABLE_WORDS_AND_PHRASES_FOR_PLACEHOLDER_EXTENSION_USE_THIS_SECTION_TO_REACH_EXACTLY_512_CHARACTERS_SE_';
 
-    #save_cipher_ring ($ring, "/tmp/ring.json");
 
-    my $runtime_pepper= random_bytes(PEPPER_LEN);
+    print "\n\n LENGTH OF MASTER [" . length($master_secret) . "].\n";
 
-    ##say "Master Secret (first 16B of ".MASTER_SECRET_LEN."B): " . unpack("H32", substr($master_secret,0,16));
-    say "Ring Base MAC Key (first 16B of ".MAC_KEY_LEN."B): " . unpack("H32", substr($ring->{mac_key},0,16));
-    say "Runtime Pepper (first 16B of ".PEPPER_LEN."B): " . unpack("H32", substr($runtime_pepper,0,16));
-    say "Dynamic Salt Length: " . DYNAMIC_SALT_LEN . " bytes";
-    say "Deterministic Component Length: " . DETERMINISTIC_COMPONENT_LEN . " bytes";
+    my ($ring, $err_build) = $build_cipher_ring_ref->($master_secret);
+    if ($err_build) {
+        say "CLI Demo: CRITICAL - Failed to build ring: $err_build. Aborting demo.";
+        return;
+    }
+    else {
+        say "\nI built the RING!\n";
+    } 
+    #my $ring = load_cipher_ring('/tmp/g_vault_fifo._gvr_')->();
+    #my $ring = load_cipher_ring("/tmp/g_vault_fifo._gvr_");
+    save_cipher_ring ($ring, "/tmp/g_vault_fifo._gvr_");
+
+    #print "SAVED\n"; sleep 5;
+
+            # my $runtime_pepper= random_bytes(PEPPER_LEN);
+
+    my $runtime_pepper= "12345678" x 4;
 
     # --- Encryption 1 ---
-    my $msg1 = "Attack at dawn! Ivy v2.4: daemon-ready core and consumers.";
-    my $aad1 = "Operation IvyLeaf v2.4";
+    my $msg1 = 'HELLO';
+
+    #$msg1 = pack("H*", $msg1);      # hex → bin
+
+    my $aad1 = 'AAD_TEST';
+
     say "\n--- Encryption 1 ---";
-    say "AAD 1           : $aad1";
-    say "Original 1      : $msg1";
+    say "Original 1   : $msg1";
+    say "AAD      1   : $aad1";
+    say "Pepper   1   : $runtime_pepper";
     
     my ($blob1, $err_enc1) = $encrypt_ref->(ring_object=>$ring, plaintext=>$msg1, pepper=>$runtime_pepper, aad=>$aad1);
     if ($err_enc1) {
         say "Encryption 1 FAILED: $err_enc1";
     } else {
         my $salt1 = substr($blob1, 0, DYNAMIC_SALT_LEN); 
-        say "Dynamic Salt 1 (first 16B of ".DYNAMIC_SALT_LEN."B): ". unpack("H32", substr($salt1,0,16));
-        say "Ciphertext 1 (salt+nonce+ct+tag, first 32B): " . unpack("H64", substr($blob1,0,32));
+        #say "Dynamic Salt 1 (first 16B of ".DYNAMIC_SALT_LEN."B): ". unpack("H32", substr($salt1,0,16));
+
+        my $cipher_hex    = unpack("H*", $blob1);         # bin → hex
+           #$cipher_hex    = '86d691691156390aa4c24353297fb321fe8b68815573c2fad558b6543e23aeb93b962fe6d9de0a5fd80a8dcd3200202f4fb7ab6d1a72c711c9649980eeaf506b114ff5b00fba63579354c9b60c4f5dcd4f2765a39f3625d1f985e08bf7f0b176598dd3e10b65a0810f11407503e9675673f407d0778650e25e0732281d61a1f466f0fd0bd7a312fea9e099';
+        my $cipher_un_hex = pack("H*", $cipher_hex);      # hex → bin
+           
+        say "Ciphertext 1 (salt+nonce+ct+tag, first 32B): $cipher_hex";
         
-        my ($out1, $err_dec1)  = $decrypt_ref->(ring_object=>$ring, ciphertext_blob=>$blob1, pepper=>$runtime_pepper, aad=>$aad1);
+        my ($out1, $err_dec1)  = $decrypt_ref->(ring_object=>$ring, ciphertext_blob=>$cipher_un_hex, pepper=>$runtime_pepper, aad=>$aad1);
         if ($err_dec1) {
             say "Decryption 1 FAILED: $err_dec1";
             say "Recovered 1     : [DECRYPTION FAILED]";
         } else {
             say "Recovered 1     : $out1 " . ($out1 eq $msg1 ? "[OK]" : "[FAIL - PLAINTEXT MISMATCH]");
         }
+        sleep 120;
     }
 
     # --- Encryption 2 (same message, different salt, different AAD, same pepper) ---
@@ -688,91 +710,98 @@ $_cli_demo_ref = sub {
     }
 };
 
-use JSON::MaybeXS qw(encode_json decode_json);
 use MIME::Base64 qw(encode_base64 decode_base64);
 use Scalar::Util qw(refaddr);
-
-#––– Export the ring to a file ––––––––––––––––––––––––––––––––––––––––––––––
+#──────────────────────────────────────────────────────────────────────────────
+# save_cipher_ring – identical API, streaming output (one record per line)
+#──────────────────────────────────────────────────────────────────────────────
 sub save_cipher_ring {
     my ($ring, $filename) = @_;
-    my %seen;
-    my @nodes_export;
-    my $node = $ring->{first_node};
-
-    while (refaddr($node) && !$seen{refaddr($node)}++) {
-        my %d = $node->();   # index, stored_byte, mac, mode, param, next_node
-        push @nodes_export, {
-            index       => $d{index},
-            stored_byte => $d{stored_byte},
-            mac         => encode_base64($d{mac},   ''),  # binary→ascii
-            mode        => $d{mode},
-            param       => $d{param},
-        };
-        $node = $d{next_node};
-    }
-
-    my $out = {
-        mac_key => encode_base64($ring->{mac_key}, ''),
-        nodes   => \@nodes_export,
-    };
-
     open my $fh, '>', $filename
       or croak "save_cipher_ring: cannot open '$filename': $!";
-    print $fh encode_json($out);
+
+    print {$fh} encode_base64($ring->{mac_key}, ''), "\n";   # MAC-key header
+
+    my %seen;
+    my $node = $ring->{first_node};
+    while (refaddr($node) && !$seen{refaddr($node)}++) {
+        my %d = $node->();   # index, stored_byte, mac, mode, param, next_node
+        print {$fh} join("\t",
+            $d{index},
+            $d{stored_byte},
+            encode_base64($d{mac}, ''),
+            $d{mode},
+            (defined $d{param} ? $d{param} : ''),
+        ), "\n";
+        $node = $d{next_node};
+    }
     close $fh;
 }
 
-#––– Rebuild the ring from disk ––––––––––––––––––––––––––––––––––––––––––––––
+#──────────────────────────────────────────────────────────────────────────────
+# load_cipher_ring – returns a CODE ref that streams nodes one-by-one
+#──────────────────────────────────────────────────────────────────────────────
+
+#──────────────────────────────────────────────────────────────────────────────
 sub load_cipher_ring {
     my ($filename) = @_;
-    open my $fh, '<', $filename
-      or croak "load_cipher_ring: cannot open '$filename': $!";
-    local $/;
-    my $json = <$fh>;
-    close $fh;
 
-    my $in = decode_json($json);
-    my @nodes_data = @{ $in->{nodes} };
-    my @closures;
-    my @next_refs;
+    return sub {
+        local $/ = "\n";
+        open my $fh, '<', $filename or croak "load_cipher_ring: cannot open '$filename': $!";
 
-    for my $nd (@nodes_data) {
-        my ($i, $sb, $mac_b64, $mode, $param)
-          = @{$nd}{qw/index stored_byte mac mode param/};
+        # ── header: MAC key ────────────────────────────────────────────────
+        my $mac_key_line = <$fh>;
+        defined $mac_key_line or croak "load_cipher_ring: file '$filename' is empty";
+        chomp $mac_key_line;
+        my $mac_key = decode_base64($mac_key_line);
+        my $no = 0;
+        # ── stream nodes one at a time ─────────────────────────────────────
+        my ($first_closure, $prev_next_ref);
+        while (my $line = <$fh>) {
+            chomp $line;
+            next unless length $line;                   # skip blank lines
 
-        my $mac = decode_base64($mac_b64);
-        my $next;
-        push @next_refs, \$next;
+            my ($idx, $sb, $mac_b64, $mode, $param) = split /\t/, $line, 5;
+            my $mac  = decode_base64($mac_b64);
 
-        push @closures, sub {
-            return (
-                index       => $i,
-                stored_byte => $sb,
-                mac         => $mac,
-                mode        => $mode,
-                param       => $param,
-                next_node   => $next,
-            );
+            my $next;                                   # new lexical each pass
+            my $closure = sub {
+                return (
+                    index       => 0 + $idx,
+                    stored_byte => 0 + $sb,
+                    mac         => $mac,
+                    mode        => $mode,
+                    param       => $param,
+                    next_node   => $next,
+                );
+            };
+
+            $first_closure   //= $closure;              # remember the head
+            $$prev_next_ref   = $closure if $prev_next_ref; # link prior → this
+            $prev_next_ref    = \$next;                 # remember spot to fill
+            $no++;
+        }
+        close $fh;
+
+        $$prev_next_ref = $first_closure                # close the ring
+          if $prev_next_ref && $first_closure;
+
+        print STDERR "[SUCCESS] Loaded [$no] ring elements.\n";
+        return {
+            first_node => $first_closure,
+            mac_key    => $mac_key,
         };
-    }
-
-    # link the closures into a ring
-    for my $i (0 .. $#closures) {
-        ${ $next_refs[$i] } = $closures[ ($i+1) % @closures ];
-    }
-
-    my $ring = {
-        first_node => $closures[0],
-        mac_key    => decode_base64($in->{mac_key}),
     };
-    return $ring;
 }
+#-----------------------------------------------------------------------
 
 #-----------------------------------------------------------------------
-#  Program entry‑point
+#  Program entry-point
 #-----------------------------------------------------------------------
 if (@ARGV && $ARGV[0] eq '--test') {
     $_selftest_replan_ref->();
 } else {
     $_cli_demo_ref->();
+    print "hi $$\n"; print "\n\n\n waiting....\n"; sleep 9999999999999;
 }
