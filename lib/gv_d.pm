@@ -7,6 +7,7 @@ use Scalar::Util qw(refaddr);
 use Crypt::AuthEnc::ChaCha20Poly1305 qw(chacha20poly1305_decrypt_verify);
 use Crypt::KeyDerivation             qw(hkdf);
 use Crypt::Digest::BLAKE2b_256       qw(blake2b_256 blake2b_256_hex);
+use Crypt::Digest::BLAKE2b_512 qw(blake2b_512);
 use Math::Random::MT;
 use Carp qw(croak);
 
@@ -73,7 +74,8 @@ my $_derive=sub{
 sub decrypt {
     my %a = @_==1 ? %{$_[0]} : @_;
     my ($blob,$pepper,$aad) = @a{qw(cipher_text pepper aad)};
-    $aad //= '';
+    $aad //= '___empty___';
+    my $aad_hashed = blake2b_512($aad);
 
     return (undef,ERR_INVALID_INPUT) unless defined $blob;
     return (undef,ERR_INVALID_INPUT) unless defined($pepper) && length($pepper)==PEPPER_LEN;
@@ -98,7 +100,7 @@ sub decrypt {
     return (undef,ERR_DECRYPTION_FAILED) if $nck ne $nonce;
 
     my $pt;
-    eval { $pt = chacha20poly1305_decrypt_verify($k,$nonce,$aad,$ct,$tag); 1 }
+    eval { $pt = chacha20poly1305_decrypt_verify($k,$nonce,$aad_hashed,$ct,$tag); 1 }
         or return (undef,ERR_DECRYPTION_FAILED);
 
     return ($pt,undef);

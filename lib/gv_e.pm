@@ -8,6 +8,8 @@ use Crypt::PRNG                      qw(random_bytes);
 use Crypt::AuthEnc::ChaCha20Poly1305 qw(chacha20poly1305_encrypt_authenticate);
 use Crypt::KeyDerivation             qw(hkdf);
 use Crypt::Digest::BLAKE2b_256       qw(blake2b_256 blake2b_256_hex);
+use Crypt::Digest::BLAKE2b_512 qw(blake2b_512);
+
 use Math::Random::MT;
 use Carp qw(croak);
 
@@ -85,7 +87,8 @@ my $_derive = sub {
 sub encrypt {
     my %a = @_==1 ? %{$_[0]} : @_;
     my ($pt,$pep,$name,$aad) = @a{qw(plaintext pepper key_name aad)};
-    $aad //= '';
+    $aad //= '___empty___';
+    my $aad_hashed = blake2b_512($aad);
 
     return (undef,ERR_INVALID_INPUT) unless defined $pt;
     return (undef,ERR_INVALID_INPUT) unless defined($pep) && length($pep)==PEPPER_LEN;
@@ -103,7 +106,7 @@ sub encrypt {
     my ($k,$nonce) = @{ $_derive->($sm,$salt,$pep) };
 
     my ($ct,$tag);
-    eval { ($ct,$tag)=chacha20poly1305_encrypt_authenticate($k,$nonce,$aad,$pt); 1 }
+    eval { ($ct,$tag)=chacha20poly1305_encrypt_authenticate($k,$nonce,$aad_hashed,$pt); 1 }
         or return (undef,ERR_ENCRYPTION_FAILED);
 
     return ($name_hash.$salt.$nonce.$ct.$tag, undef);
