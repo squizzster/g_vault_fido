@@ -41,24 +41,44 @@ my $_det = sub { my ($s)=@_;
     my $mt=Math::Random::MT->new(@i);
     pack 'N*',map{$mt->irand}1..(DETERMINISTIC_COMPONENT_LEN/4);
 };
+
 my $_recover = sub {
-    my($ring,$salt,$pep)=@_;
-    return(undef,'bad ring')             unless ref($ring) eq 'HASH';
-    return(undef,'bad salt')             if length($salt)!=DYNAMIC_SALT_LEN;
-    return(undef,'bad pepper')           if length($pep)!=PEPPER_LEN;
-    my @sb=unpack'C*',$salt; my@pb=unpack'C*',$pep;
-    my $k=$ring->{mac_key};
-    my(%seen,@out);my$n=$ring->{first_node};
-    while($n&&!$seen{refaddr($n)}++){
-        my%d=$n->();
-        my$orig=$_undo->($d{mode},$d{param},$d{stored_byte});
-        my$pep=$orig^$pb[$d{index}%PEPPER_LEN];
-        push@out,$pep^$sb[$d{index}%DYNAMIC_SALT_LEN];
-        $n=$d{next_node};
+    my ($ring, $salt, $pep) = @_;
+
+    return (undef, 'bad ring')   unless ref $ring eq 'HASH';
+    return (undef, 'bad salt')   if length($salt)   != DYNAMIC_SALT_LEN;
+    return (undef, 'bad pepper') if length($pep)    != PEPPER_LEN;
+
+    my @sb = unpack 'C*', $salt;
+    my @pb = unpack 'C*', $pep;
+
+    my %seen;
+    my $n    = $ring->{first_node};
+
+    # --- allocate the output buffer once (512 bytes) -------------
+    my $sm   = "\0" x MASTER_SECRET_LEN;
+    my $idx  = 0;
+
+    while ( $n && !$seen{ refaddr $n }++ ) {
+
+        my %d     = $n->();                          # node callback
+        my $orig  = $_undo->( @d{qw(mode param stored_byte)} );
+
+        # work out the final plaintext byte
+        my $byte  = $orig
+                  ^ $pb[ $d{index} % PEPPER_LEN ]
+                  ^ $sb[ $d{index} % DYNAMIC_SALT_LEN ];
+
+        # write directly into the buffer (8-bit slot)
+        vec( $sm, $idx++, 8 ) = $byte;
+
+        $n = $d{next_node};
     }
-    return(undef,'cycle')unless@out==MASTER_SECRET_LEN;
-    return(pack('C*',@out),undef);
+
+    return (undef, 'cycle') unless $idx == MASTER_SECRET_LEN;
+    return ($sm, undef);
 };
+
 my $_derive=sub{
     my($sm,$salt,$pep)=@_;
     my$det=$_det->($sm.$salt.$pep);

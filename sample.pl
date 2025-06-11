@@ -67,7 +67,7 @@ my $file      = '/tmp/g_vault_master_secrets_memory_6._gvr_';
 my ($ring,$err) = gv_c::build_cipher_ring(name => $ring_name, master_secret => 'MY_SECRET_IS_NOT_SECURE_AT_ALL_AND_YOU_CAN_FIND_IT_EASILY_IN_MEMORY_BECAUSE_IT_IS_MADE_OF_EASY_TO_READ_WORDS_WITHOUT_ANY_COMPLEXITY_OR_ENTROPY_SO_DO_NOT_USE_THIS_IN_PRODUCTION_SINCE_IT_IS_MEANT_FOR_DEBUGGING_OR_MEMORY_ANALYSIS_ONLY_THIS_IS_A_PLACEHOLDER_NOT_A_REAL_SECRET_SO_PLEASE_REPLACE_IT_WITH_A_STRONG_RANDOM_KEY_BEFORE_DEPLOYMENT_OTHERWISE_YOU_ARE_RISKING_YOUR_SYSTEM_SECURITY_THIS_IS_JUST_ANOTHER_SECTION_OF_EASY_TO_READ_FILLER_TEXT_TO_HELP_PAD_THE_SECRET_TO_A_FIXED_LENGTH_THE_PURPOSE_OF_THIS_FILLER_IS_T');
 die "build error: $err\n" if $err;
 
-gv_s::save_cipher_ring($ring, $file, 0) and print STDERR "Ring saved.\n";
+gv_s::save_cipher_ring($ring, $file, 1) and print STDERR "Ring saved.\n";
 
 ###$ring_name = 'master_secrets_2';
 ###$file      = '/tmp/g_vault_master_secrets_2._gvr_';

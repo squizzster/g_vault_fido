@@ -52,26 +52,47 @@ my $_det = sub {
 };
 
 # internal
+# --- faster, zero-copy version -------------------------------------
 my $_recover = sub {
-    my ($ring,$salt,$pepper)=@_;
-    return (undef,'bad ring') unless ref($ring) eq 'HASH';
-    return (undef,'bad salt') if length($salt)!=DYNAMIC_SALT_LEN;
-    return (undef,'bad pepper') if length($pepper)!=PEPPER_LEN;
+    my ($ring, $salt, $pepper) = @_;
 
-    my @sb = unpack 'C*',$salt;
-    my @pb = unpack 'C*',$pepper;
-    my $k  = $ring->{mac_key};
-    my (%seen,@out); my $n=$ring->{first_node};
-    while ($n && !$seen{refaddr($n)}++) {
-        my %d = $n->();
-        my $orig = $_undo->($d{mode},$d{param},$d{stored_byte});
-        my $pep = $orig ^ $pb[$d{index}%PEPPER_LEN];
-        push @out, $pep ^ $sb[$d{index}%DYNAMIC_SALT_LEN];
-        $n = $d{next_node};
+    # sanity checks ­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­
+    return (undef, 'bad ring')   unless ref $ring eq 'HASH';
+    return (undef, 'bad salt')   if length($salt)   != DYNAMIC_SALT_LEN;
+    return (undef, 'bad pepper') if length($pepper) != PEPPER_LEN;
+
+    # unpack salt / pepper once
+    my @sb = unpack 'C*', $salt;
+    my @pb = unpack 'C*', $pepper;
+
+    my %seen;
+    my $node = $ring->{first_node};
+
+    # pre-allocate the 512-byte master-secret buffer
+    my $secret = "\0" x MASTER_SECRET_LEN;
+    my $i      = 0;                          # write index
+
+    while ( $node && !$seen{ refaddr $node }++ ) {
+        my %d     = $node->();               # {mode,param,stored_byte,index,next_node}
+
+        # undo node-level obfuscation
+        my $orig  = $_undo->( @d{qw(mode param stored_byte)} );
+
+        # salt- & pepper-mix
+        my $byte  = $orig
+                  ^ $pb[ $d{index} % PEPPER_LEN ]
+                  ^ $sb[ $d{index} % DYNAMIC_SALT_LEN ];
+
+        # write straight into buffer (8-bit slot)
+        vec( $secret, $i++, 8 ) = $byte;
+
+        $node = $d{next_node};
     }
-    return (undef,'cycle') unless @out==MASTER_SECRET_LEN;
-    return (pack('C*',@out),undef);
+
+    return (undef, 'cycle') unless $i == MASTER_SECRET_LEN;
+    return ($secret, undef);
 };
+
 my $_derive = sub {
     my ($sm,$salt,$pep)=@_;
     my $det = $_det->($sm.$salt.$pep);
