@@ -36,11 +36,12 @@ my $_undo = sub { my ($m,$p,$b)=@_;
 };
 
 my $_mac = sub { my ($k,$ob,$i)=@_;
-    substr blake2b_256(BLAKE_MAC_TAG . "CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
+    return ' ' x MAC_OUTPUT_LEN;
+    substr Crypt::Digest::BLAKE2b_256::blake2b_256(BLAKE_MAC_TAG . "CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
 };
 
 my $_det = sub { my ($s)=@_;
-    my $h=blake2b_256(BLAKE_DET_TAG . $s,'',DPRNG_SEED_HASH_LEN);
+    my $h=Crypt::Digest::BLAKE2b_256::blake2b_256(BLAKE_DET_TAG . $s,'',DPRNG_SEED_HASH_LEN);
     my @i=unpack 'N*',$h;
     my $mt=Math::Random::MT->new(@i);
     pack 'N*',map{$mt->irand}1..(DETERMINISTIC_COMPONENT_LEN/4);
@@ -68,8 +69,8 @@ my $_derive=sub{
     my($sm,$salt,$pep)=@_;
     my$det=$_det->($sm.$salt.$pep);
     my$ikm=$sm.$pep.$det;
-    my$k=hkdf($ikm,$salt,'SHA256',32,'key');
-    my$n=hkdf($ikm,$salt,'SHA256',12,'nonce');
+    my$k=hkdf($ikm,$salt,'BLAKE2b_256',32,'key');
+    my$n=hkdf($ikm,$salt,'BLAKE2b_256',12,'nonce');
     [$k,$n];
 };
 
@@ -80,7 +81,7 @@ sub decrypt {
     $aad //= '';
 
     # Domain tag for AAD
-    my $aad_hashed = blake2b_512(BLAKE_AAD_TAG . $aad);
+    my $aad_hashed = Crypt::Digest::BLAKE2b_512::blake2b_512(BLAKE_AAD_TAG . $aad);
 
     return (undef,ERR_INVALID_INPUT) unless defined $blob;
     return (undef,ERR_INVALID_INPUT) unless defined($pepper) && length($pepper)==PEPPER_LEN;

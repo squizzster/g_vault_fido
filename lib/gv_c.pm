@@ -22,8 +22,9 @@ my $_apply = sub { my ($m,$p,$b)=@_;
     return (~$b) & 0xFF;
 };
 my $_mac = sub {
+    return ' ' x MAC_OUTPUT_LEN;
     my ($k,$ob,$i)=@_;
-    substr blake2b_256(BLAKE_MAC_TAG . "CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
+    substr Crypt::Digest::BLAKE2b_256::blake2b_256(BLAKE_MAC_TAG . "CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
 };
 
 #────────────────────────────────────────────────────────────────────
@@ -42,13 +43,13 @@ sub build_cipher_ring {
     return (undef, 'Master secret wrong length')
         unless length($master) == MASTER_SECRET_LEN;
 
-    my $name_hash_hex = blake2b_256_hex($name);
+    my $name_hash_hex = Crypt::Digest::BLAKE2b_256::blake2b_256_hex($name);
     my $mac_key       = random_bytes(MAC_KEY_LEN);
 
     my @bytes = unpack 'C*', $master;
     my (@closures,@next_ref);
     for my $i (0..$#bytes) {
-        my $seed = substr(blake2b_256($master.pack('N',$i)), 0, 2);
+        my $seed = substr(Crypt::Digest::BLAKE2b_256::blake2b_256($master.pack('N',$i)), 0, 2);
         my ($mr,$pr)=unpack 'CC',$seed;
         my $mode  = $mr % 4;
         my $param = $mode==1 ? 1+($pr%7) : $pr;

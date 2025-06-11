@@ -3,21 +3,26 @@ use v5.24;
 use strict;
 use warnings;
 
-use Carp         qw(croak);
+use Carp         qw(carp);
 use MIME::Base64 qw(encode_base64);
 use Scalar::Util qw(refaddr);
 
 #────────────────────────────────────────────────────────────────────
 sub save_cipher_ring {
     my ($ring,$file,$x) = @_;
-    my $name_hash = $ring->{name_hash}
-        or croak 'Ring missing name_hash';
-
+    unless ($ring && ref $ring eq 'HASH' && $ring->{name_hash}) {
+        carp 'Ring missing name_hash';
+        return;
+    }
+    if (!$x && -e $file) {
+        carp "save_cipher_ring: file '$file' exists and overwrite not allowed";
+        return;
+    }
     open my $fh, '>', $file
-        or croak "save_cipher_ring: cannot open '$file': $!";
+        or carp("save_cipher_ring: cannot open '$file': $!"), return;
 
-    print {$fh} "$name_hash\n";                      # 1) name-hash
-    print {$fh} encode_base64($ring->{mac_key},''),"\n";  # 2) MAC key
+    print {$fh} "$ring->{name_hash}\n";
+    print {$fh} encode_base64($ring->{mac_key},''),"\n";
 
     my %seen;
     my $node = $ring->{first_node};
@@ -33,5 +38,6 @@ sub save_cipher_ring {
         $node = $d{next_node};
     }
     close $fh;
+    return 1;
 }
 1;
