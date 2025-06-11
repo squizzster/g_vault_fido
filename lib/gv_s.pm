@@ -9,7 +9,7 @@ use Scalar::Util qw(refaddr);
 
 #────────────────────────────────────────────────────────────────────
 sub save_cipher_ring {
-    my ($ring,$file) = @_;
+    my ($ring,$file,$x) = @_;
     my $name_hash = $ring->{name_hash}
         or croak 'Ring missing name_hash';
 

@@ -11,6 +11,7 @@ use constant {
     MASTER_SECRET_LEN => 512,
     MAC_KEY_LEN       => 32,
     MAC_OUTPUT_LEN    => 16,
+    BLAKE_MAC_TAG     => pack("H*", 'ee4bcef77cb49c70f31de849dccaab24'),
 };
 
 # helpers
@@ -22,7 +23,7 @@ my $_apply = sub { my ($m,$p,$b)=@_;
 };
 my $_mac = sub {
     my ($k,$ob,$i)=@_;
-    substr blake2b_256("CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
+    substr blake2b_256(BLAKE_MAC_TAG . "CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
 };
 
 #────────────────────────────────────────────────────────────────────

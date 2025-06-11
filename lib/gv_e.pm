@@ -8,8 +8,7 @@ use Crypt::PRNG                      qw(random_bytes);
 use Crypt::AuthEnc::ChaCha20Poly1305 qw(chacha20poly1305_encrypt_authenticate);
 use Crypt::KeyDerivation             qw(hkdf);
 use Crypt::Digest::BLAKE2b_256       qw(blake2b_256 blake2b_256_hex);
-use Crypt::Digest::BLAKE2b_512 qw(blake2b_512);
-
+use Crypt::Digest::BLAKE2b_512       qw(blake2b_512);
 use Math::Random::MT;
 use Carp qw(croak);
 
@@ -25,6 +24,9 @@ use constant {
     ERR_INVALID_INPUT           => 'Invalid input provided.',
     ERR_INTERNAL_STATE          => 'Internal state error detected.',
     ERR_RING_NOT_AVAILABLE      => 'Ring not loaded.',
+    BLAKE_MAC_TAG               => pack("H*", 'ee4bcef77cb49c70f31de849dccaab24'),
+    BLAKE_AAD_TAG               => pack("H*", '83cddaa3fbfcabc498527218b3fa4aa6'),
+    BLAKE_DET_TAG               => pack("H*", '3562861b7919fa497b42725d6f9548ae'),
 };
 
 # helpers
@@ -42,11 +44,12 @@ my $_undo = sub { my ($m,$p,$b)=@_;
 };
 my $_mac = sub {
     my ($k,$ob,$i)=@_;
-    substr blake2b_256("CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
+    substr blake2b_256(BLAKE_MAC_TAG . "CryptoRingNodeMAC$k".pack('CN',$ob,$i)),0,MAC_OUTPUT_LEN;
 };
 my $_det = sub {
     my ($seed)=@_;
-    my $h = blake2b_256($seed,'',DPRNG_SEED_HASH_LEN);
+    # Now includes DET_TAG
+    my $h = blake2b_256(BLAKE_DET_TAG . $seed,'',DPRNG_SEED_HASH_LEN);
     my @i = unpack 'N*',$h;
     my $mt = Math::Random::MT->new(@i);
     pack 'N*', map { $mt->irand } 1..(DETERMINISTIC_COMPONENT_LEN/4);
@@ -87,8 +90,10 @@ my $_derive = sub {
 sub encrypt {
     my %a = @_==1 ? %{$_[0]} : @_;
     my ($pt,$pep,$name,$aad) = @a{qw(plaintext pepper key_name aad)};
-    $aad //= '___empty___';
-    my $aad_hashed = blake2b_512($aad);
+    $aad //= '';
+
+    # Domain tag for AAD
+    my $aad_hashed = blake2b_512(BLAKE_AAD_TAG . $aad);
 
     return (undef,ERR_INVALID_INPUT) unless defined $pt;
     return (undef,ERR_INVALID_INPUT) unless defined($pep) && length($pep)==PEPPER_LEN;

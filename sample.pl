@@ -60,22 +60,25 @@ use gv_l ();    # load
 use gv_e ();    # encrypt
 use gv_d ();    # decrypt
 
-my $ring_name = 'master_secrets_2';
-my $file      = '/tmp/g_vault_master_secrets_2._gvr_';
+my $ring_name = 'memory';
+my $file      = '/tmp/g_vault_master_secrets_memory._gvr_';
 
 # 1) build & save
-my ($ring,$err) = gv_c::build_cipher_ring(name => $ring_name);
+my ($ring,$err) = gv_c::build_cipher_ring(name => $ring_name, master_secret => 'MY_SECRET_IS_NOT_SECURE_AT_ALL_AND_YOU_CAN_FIND_IT_EASILY_IN_MEMORY_BECAUSE_IT_IS_MADE_OF_EASY_TO_READ_WORDS_WITHOUT_ANY_COMPLEXITY_OR_ENTROPY_SO_DO_NOT_USE_THIS_IN_PRODUCTION_SINCE_IT_IS_MEANT_FOR_DEBUGGING_OR_MEMORY_ANALYSIS_ONLY_THIS_IS_A_PLACEHOLDER_NOT_A_REAL_SECRET_SO_PLEASE_REPLACE_IT_WITH_A_STRONG_RANDOM_KEY_BEFORE_DEPLOYMENT_OTHERWISE_YOU_ARE_RISKING_YOUR_SYSTEM_SECURITY_THIS_IS_JUST_ANOTHER_SECTION_OF_EASY_TO_READ_FILLER_TEXT_TO_HELP_PAD_THE_SECRET_TO_A_FIXED_LENGTH_THE_PURPOSE_OF_THIS_FILLER_IS_T');
 die "build error: $err\n" if $err;
 gv_s::save_cipher_ring($ring,$file);
-say "Ring saved.";
+print STDERR "Ring saved.\n";
+
+###$ring_name = 'master_secrets_2';
+###$file      = '/tmp/g_vault_master_secrets_2._gvr_';
 
 # 2) load (put in cache once)
 gv_l::gv_l($file)->();
 
 # 3) encrypt
 my $pepper = '12345678' x 4;   # 32-byte pepper
-my $aad    = 'AAD_TEST'; # x 100;
-my $plain  = 'Atoms consist of an extremely small, positively charged nucleus surrounded by a cloud of negatively charged electrons. Although typically the nucleus is less than one ten-thousandth the size of the atom, the nucleus contains more that 99.9% of the mass of the atom. Atoms consist of a central nucleus containing protons and neutrons, surrounded by negatively charged electrons that occupy specific energy levels or orbitals.';
+my $aad    = 'AAD_TEST' x 100;
+my $plain  = 'Atoms consist of an extremely small, positively charged nucleus surrounded by a cloud of negatively charged electrons. Although typically the nucleus is less than one ten-thousandth the size of the atom, the nucleus contains more that 99.9% of the mass of the atom. Atoms consist of a central nucleus containing protons and neutrons, surrounded by negatively charged electrons that occupy specific energy levels or orbitals.' x  500;
 
 my ($blob,$eerr) = gv_e::encrypt({
     plaintext => $plain,
@@ -85,6 +88,12 @@ my ($blob,$eerr) = gv_e::encrypt({
 });
 die "encrypt error: $eerr\n" if $eerr;
 say "Ciphertext bytes: ", length($blob);
+#say encode_hex($blob);
+
+my $ciphertext = substr($blob, 64 + 64 + 12, length($blob) - 64 - 64 - 12 - 16);
+#my $entropy    = entropy ($ciphertext);
+
+#say "Entropy is [$entropy].";
 
 # 4) decrypt
 my ($out,$derr) = gv_d::decrypt({
@@ -93,5 +102,24 @@ my ($out,$derr) = gv_d::decrypt({
     aad         => "$aad",
 });
 die "decrypt error: $derr\n" if $derr;
-say "Recovered: $out" if defined $out;
+say "Recovered: " . substr($out,0,200) if defined $out;
 
+
+sub encode_hex { unpack 'H*', $_[0] }
+sub decode_hex { pack 'H*', $_[0] }
+sub entropy {
+    my ($data) = @_;
+    return 0 unless length $data;
+
+    my %count;
+    $count{$_}++ for split //, $data;
+    my $len = length $data;
+    my $entropy = 0;
+    for my $v (values %count) {
+        my $p = $v / $len;
+        $entropy -= $p * log($p)/log(2);
+    }
+    return $entropy;
+}
+
+#sleep 10;
