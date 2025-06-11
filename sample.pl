@@ -80,7 +80,7 @@ my $pepper = '12345678' x 4;   # 32-byte pepper
 my $aad    = 'AAD_TEST' x 100;
 my $plain  = 'Atoms consist of an extremely small, positively charged nucleus surrounded by a cloud of negatively charged electrons. Although typically the nucleus is less than one ten-thousandth the size of the atom, the nucleus contains more that 99.9% of the mass of the atom. Atoms consist of a central nucleus containing protons and neutrons, surrounded by negatively charged electrons that occupy specific energy levels or orbitals.' x  500;
 
-my $goes = 10000;
+my $goes = 1000;
 
 for (1 .. $goes) {
     my ($blob, $eerr) = gv_e::encrypt({
