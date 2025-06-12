@@ -13,13 +13,21 @@ Log::Any::Adapter->set('Stderr');
 # other
 use AnyEvent;
 use Data::Dump qw(dump);
+use Time::HiRes qw(time);
 #
 
-#my $f = Fifo::get_pid_open_files("/var/log/httpd/ssl_error_log");
 
-#print "\n";
-#print dump $f;
-#print "\n";
+my $target = "/var/log/httpd/ssl_error_log";
+
+my $t1 = time();
+my $f1 = pid::pids_holding_file($target);
+my $elapsed1 = time() - $t1;
+print dump $f1;
+print "\n";
+printf "get_pid_open_files      took: %.6f seconds\n", $elapsed1;
+
+#print dump $f2;
+print "\n";
 
 # Path to monitor
 my $fifo = '/tmp/test.fifo';

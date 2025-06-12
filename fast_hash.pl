@@ -2,8 +2,9 @@
 use strict;
 use warnings;
 use AnyEvent;
-use FindBin;
-use lib $FindBin::Bin;     # look next to this script
+
+use lib 'lib';
+
 use Fifo;
 use Data::Dump qw(dump);
 
@@ -11,7 +12,7 @@ use fast_file_hash qw(fast_file_hash);
 
 # configuration:
 my %config = (
-    include_full_path    => 0,                   # full filename (e.g. /foo/bar/baz)
+    include_full_path    => 1,                   # full filename (e.g. /foo/bar/baz)
     include_basename     => 1,                   # base filename (e.g. baz)
     include_inode        => 0,                   # inode number
     include_owner_uid    => 1,                   # owner UID

@@ -42,14 +42,15 @@ sub _rec_exists { my ($g,$ino)=@_;    exists $g->{monitor}{$ino} }
 # ------------------------------------------------------------------ #
 # Public API – thin wrappers delegating to refactored helpers        #
 # ------------------------------------------------------------------ #
-sub get_inode          { return __fifo_get_inode(@_) }           # ≤ 20 loc
-sub inotify_init       { return __fifo_inotify_init(@_) }        # ≤ 20 loc
-sub inotify_watch_file { return __fifo_inotify_watch_file(@_) }  # wrapper ≤ 10 loc
-sub fifo_add           { return __fifo_fifo_add(@_) }            # wrapper ≤ 10 loc
-sub fifo_rm            { return __fifo_fifo_rm(@_) }             # unchanged small
+sub get_inode          { return __fifo_get_inode(@_) }             # ≤ 20 loc
+sub inotify_init       { return __fifo_inotify_init(@_) }          # ≤ 20 loc
+sub inotify_watch_file { return __fifo_inotify_watch_file(@_) }    # wrapper ≤ 10 loc
+sub fifo_add           { return __fifo_fifo_add(@_) }              # wrapper ≤ 10 loc
+sub fifo_rm            { return __fifo_fifo_rm(@_) }               # unchanged small
 sub fifo_access_and_cycle { return __fifo_fifo_access_and_cycle(@_) }
 sub inotify_event      { return __fifo_inotify_event(@_) }
-sub get_pid_open_files { return __fifo_get_pid_open_files(@_) }  # unchanged small
+sub get_pid_open_files { return pid::pids_holding_file(@_) } # unchanged small
+
 
 # ------------------------------------------------------------------ #
 # ==================  INTERNAL IMPLEMENTATION SECTION  ==============#
@@ -308,21 +309,26 @@ sub __fifo_fac_impl {                                   # ≤ 45 loc
 
         my $pid;
 
-        if (my $pids=__fifo_get_pid_open_files($path)){
-            my $n=keys %$pids;
-            if ($n>1){
-                info "Open PIDs for [$path]: $n";
-                my $pid_dump = eval{require Data::Dump;1}
-                    ? Data::Dump::dump($pids)
-                    : do{ require Data::Dumper;
-                          local $Data::Dumper::Indent=1;
-                          Data::Dumper::Dumper($pids) };
-                print "\n",$pid_dump,"\n";
+        if (my $pids=get_pid_open_files($path)){  # $pids is now ARRAY ref
+            if ( scalar @$pids > 1 ) {
+                info "Open PIDs for [$path]: [" . scalar @$pids . "] => " . ( dump $pids );
                 $pid = '{fix}';
             }
-            elsif ( $n == 1 ) {
-                ($pid) = keys %$pids;  # gets the only key, which is 1 x $pid
+            else {
+                ($pid) = @$pids;  # gets the only element, which is 1 x $pid
             }
+            #
+            # Let's get the cmd file....
+            foreach my $pid_to_check ( @{$pids} ) {
+                my $pid_info = pid::pid_info ($pid_to_check);
+                print STDERR "  P= [$pid_to_check] => " . ( dump $pid_info );
+            } 
+            print STDERR "\n";
+        
+        }
+        else {
+            # It was there -- and now it is gone...  overall, not very good... but I dont think we rotate.
+            return;
         }
 
         if (print $fh "file=[$path] i=[$ino] pid=[$pid] t=(" . time() . ").\n"){
@@ -476,31 +482,6 @@ sub __fifo_ie_system {                              # ≤ 25 loc
         catch { error "system-file callback died for $rec->{path}: $_" };
     }
     return;
-}
-
-#############################
-#  get_pid_open_files       #
-#############################
-sub __fifo_get_pid_open_files {                        # AI_GOOD
-    my ($target) = @_;
-    return _with_root(sub {
-        my %m;
-        opendir my $dh,"/proc" or return;
-        while (my $pid=readdir $dh){
-            next unless $pid =~ /^\d+$/;
-            next if $pid == $$;
-            my $fdir="/proc/$pid/fd";
-            opendir my $fdh,$fdir or next;
-            while (my $fd=readdir $fdh){
-                next if $fd =~ /^\.\.?$/;
-                my $link=readlink("$fdir/$fd") or next;
-                if ($link eq $target){ $m{$pid}=$target; last }
-            }
-            closedir $fdh;
-        }
-        closedir $dh;
-        return %m ? \%m : undef;
-    });
 }
 
 ############################
