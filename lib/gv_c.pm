@@ -11,10 +11,8 @@ use constant {
     MASTER_SECRET_LEN => 512,
     MAC_KEY_LEN       => 32,
     MAC_OUTPUT_LEN    => 16,
-    BLAKE_MAC_TAG     => pack("H*", 'ee4bcef77cb49c70f31de849dccaab24'),
+    BLAKE_NAME_TAG    => pack("H*", 'ee4bcef77cb49c70f31de849dccaab24'),
 };
-
-use constant BLAKE_MAC_TMP => "_" x MAC_OUTPUT_LEN;
 
 # helpers
 my $_apply = sub { my ($m,$p,$b)=@_;
@@ -40,7 +38,7 @@ sub build_cipher_ring {
     return (undef, 'Master secret wrong length')
         unless length($master) == MASTER_SECRET_LEN;
 
-    my $name_hash_hex = Crypt::Digest::BLAKE2b_256::blake2b_256_hex($name);
+    my $name_hash_hex = Crypt::Digest::BLAKE2b_256::blake2b_256_hex($name . BLAKE_NAME_TAG);
     my $mac_key       = random_bytes(MAC_KEY_LEN);
 
     my @bytes = unpack 'C*', $master;

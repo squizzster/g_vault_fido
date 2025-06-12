@@ -28,8 +28,6 @@ my $fifo = '/tmp/test.fifo';
 Fifo::fifo_add( $g, $fifo ) or die "Failed to start FIFO watcher. \n";
 print "Watching [$fifo].\n";
 
-print " g=> " . ( dump $g )  . "\n\n";
-
 AnyEvent->condvar->recv;
 
 END {

@@ -23,7 +23,6 @@ use constant {
     ERR_INVALID_INPUT           => 'Invalid input provided.',
     ERR_INTERNAL_STATE          => 'Internal state error detected.',
     ERR_RING_NOT_AVAILABLE      => 'Ring not loaded.',
-    BLAKE_MAC_TAG               => pack("H*", 'ee4bcef77cb49c70f31de849dccaab24'),
     BLAKE_AAD_TAG               => pack("H*", '83cddaa3fbfcabc498527218b3fa4aa6'),
     BLAKE_DET_TAG               => pack("H*", '3562861b7919fa497b42725d6f9548ae'),
 };

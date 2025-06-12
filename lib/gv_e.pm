@@ -24,9 +24,10 @@ use constant {
     ERR_INVALID_INPUT           => 'Invalid input provided.',
     ERR_INTERNAL_STATE          => 'Internal state error detected.',
     ERR_RING_NOT_AVAILABLE      => 'Ring not loaded.',
-    BLAKE_MAC_TAG               => pack("H*", 'ee4bcef77cb49c70f31de849dccaab24'),
+    BLAKE_NAME_TAG              => pack("H*", 'ee4bcef77cb49c70f31de849dccaab24'),
     BLAKE_AAD_TAG               => pack("H*", '83cddaa3fbfcabc498527218b3fa4aa6'),
     BLAKE_DET_TAG               => pack("H*", '3562861b7919fa497b42725d6f9548ae'),
+
 };
 
 # helpers
@@ -115,7 +116,7 @@ sub encrypt {
     return (undef,ERR_INVALID_INPUT) unless defined($pep) && length($pep)==PEPPER_LEN;
     return (undef,ERR_INVALID_INPUT) unless defined $name;
 
-    my $name_hash = Crypt::Digest::BLAKE2b_256::blake2b_256_hex($name);
+    my $name_hash = Crypt::Digest::BLAKE2b_256::blake2b_256_hex($name . BLAKE_NAME_TAG);
     my $ring      = gv_l::get_cached_ring($name_hash)
         or return (undef,ERR_RING_NOT_AVAILABLE);
 
