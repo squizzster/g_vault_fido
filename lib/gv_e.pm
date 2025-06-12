@@ -104,6 +104,11 @@ my $_derive = sub {
 };
 
 #────────────────────────────────────────────────────────────────────
+# expose internal recover+derive closures for downstream use
+sub _recover_for_mac { goto &{ $_recover } }
+sub _derive_for_mac  { goto &{ $_derive  } }
+
+
 sub encrypt {
     my %a = @_==1 ? %{$_[0]} : @_;
     my ($pt,$pep,$name,$aad) = @a{qw(plaintext pepper key_name aad)};

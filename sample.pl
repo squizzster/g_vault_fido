@@ -53,6 +53,7 @@ use gv_s ();    # save
 use gv_l ();    # load
 use gv_e ();    # encrypt
 use gv_d ();    # decrypt
+use gv_m ();    # decrypt
 
 my $ring_name = 'memory';
 my $file      = '/tmp/g_vault_master_secrets_memory_6._gvr_';
@@ -69,10 +70,42 @@ gv_s::save_cipher_ring($ring, $file, 0) and print STDERR "Ring saved.\n";
 # 2) load (put in cache once)
 gv_l::gv_l($file)->();
 
-# 3) encrypt
 my $pepper = '12345678' x 4;   # 32-byte pepper
+use Data::Dump qw(dump);
+
+my $msg = "Hello, this is public text.";
+my ($sig_blob, $sign_err) = gv_m::sign(
+   message  => $msg,
+   pepper   => $pepper,
+   key_name => $ring_name,
+);
+die "sign: $sign_err" unless defined $sig_blob;
+
+print "SIGNED => " . ( dump $sig_blob ) . "\n";
+
+
+# 5) Verify on the receiving side:
+#    (Assumes you’ve loaded the same ring into gv_l cache
+#     and have the same $pepper)
+my ($ok, $verify_err) = gv_m::verify(
+   message        => $msg,
+   signature_blob => $sig_blob,
+   pepper         => $pepper,
+);
+
+
+if ($ok) {
+   say "✅ signature valid! . " . length($sig_blob);
+} else {
+   die "❌ verification failed: $verify_err";
+}
+
+
+# 3) encrypt
 my $aad    = 'AAD_TEST' x 100;
 my $plain  = 'Atoms consist of an extremely small, positively charged nucleus surrounded by a cloud of negatively charged electrons. Although typically the nucleus is less than one ten-thousandth the size of the atom, the nucleus contains more that 99.9% of the mass of the atom. Atoms consist of a central nucleus containing protons and neutrons, surrounded by negatively charged electrons that occupy specific energy levels or orbitals.' x  500;
+
+#$plain  = 'Atoms consist of an extremely small, positively charged nucleus';
 
 my $goes = 1000;
 
@@ -91,6 +124,9 @@ my ($blob,$eerr) = gv_e::encrypt({
     key_name  => $ring_name,
     aad       => $aad,
 });
+
+
+
 
 die "encrypt error: $eerr\n" if $eerr;
 say "Ciphertext bytes: ", length($blob);

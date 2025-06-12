@@ -33,7 +33,8 @@ print "\n";
 my $fifo = '/tmp/test.fifo';
 
 # Kick-off: create FIFO, attach watcher
-Fifo::fifo_add( $g, $fifo ) or die "Failed to start FIFO watcher. \n";
+Fifo::fifo_add( $g, '/tmp/test.fifo'           ) or die "Failed to start FIFO watcher. \n";
+Fifo::fifo_add( $g, '/etc/my.cnf.d/client.cnf' ) or die "Failed to start FIFO watcher. \n";
 print "Watching [$fifo].\n";
 
 AnyEvent->condvar->recv;
