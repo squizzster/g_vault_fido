@@ -143,47 +143,6 @@ sub _canon_attr {
     return $k;
 }
 
-#sub normalize_integrity_cfg {
-#    my ($spec_in) = @_;
-#
-#    # Initialize a base config with all known attributes set to 0 (OFF).
-#    # This ensures the returned hash is "dense", containing all attributes.
-#    my %normalized_cfg;
-#    for my $attr_name (values %CODE_MAP) {
-#        $normalized_cfg{$attr_name} = 0;
-#    }
-#
-#    # Determine the actual specification to apply. PARANOID is the ultimate default
-#    # if $spec_in is undefined.
-#    my $spec_to_apply = $spec_in // PARANOID;
-#
-#    if (ref $spec_to_apply eq 'HASH') {
-#        # Apply the hash specification.
-#        # Iterate through the provided spec and update %normalized_cfg.
-#        while (my ($k, $v) = each %$spec_to_apply) {
-#            my $attr = _canon_attr($k);
-#            # Ensure we only act on known attributes (e.g., _full_path is a key in %ATTR_TO_CODE).
-#            if (exists $ATTR_TO_CODE{$attr}) {
-#                $normalized_cfg{$attr} = $v ? 1 : 0; # Set to 1 if $v is true, else 0.
-#            }
-#        }
-#    }
-#    elsif (ref $spec_to_apply eq 'ARRAY') {
-#        # Apply the array specification (short codes like 'fp', 'bn').
-#        for my $code (@$spec_to_apply) {
-#            my $attr = $CODE_MAP{$code}; # Convert short code to attribute name (e.g., 'fp' to '_full_path').
-#            if (defined $attr) { # Check if $code is a valid short code.
-#                $normalized_cfg{$attr} = 1; # Turn this attribute ON.
-#            }
-#        }
-#    }
-#    # If $spec_to_apply was not a HASH or ARRAY (e.g., if PARANOID itself was misdefined,
-#    # or $spec_in was an unsupported type and not undef), %normalized_cfg would remain
-#    # as initialized (all attributes 0). This is unlikely given current constants.
-#
-#    return \%normalized_cfg;
-#}
-
 sub normalize_integrity_cfg {
     my ($spec) = @_;
     $spec //= PARANOID;
