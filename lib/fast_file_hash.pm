@@ -33,6 +33,7 @@ sub __fast_file_hash_core {
     my ( $file_raw, $cfg_ref ) = @_;
     return undef unless defined $file_raw;
 
+    print STDERR ("Fast_file_hash [$file_raw].\n");
     my $digest;
     eval {
         my $file = abs_path($file_raw)
@@ -44,10 +45,13 @@ sub __fast_file_hash_core {
         my $initial_size  = $st[7];
         my $initial_mtime = $st[9];
 
-        my %cfg = __merge_config($cfg_ref);
+        my $cfg = __merge_config($cfg_ref);
+
+        my $cfg_str = b58f::encode ( cbor::encode( $cfg ) ) ;
+        ##print "\n CFG_STR [$cfg_str].\n";
 
         my ( $blob, $parts ) =
-          __build_blob( $file, \%cfg, \@st, $initial_size, $initial_mtime );
+          __build_blob( $file, $cfg, \@st, $initial_size, $initial_mtime );
 
         die "No data selected for hashing on '$file'" unless $parts;
         $digest = blake2b_256_hex($blob)
@@ -63,24 +67,25 @@ sub __fast_file_hash_core {
 sub __merge_config {
     my ($user_cfg) = @_;
 
-    my %default_cfg = (
-        include_full_path    => 0,
-        include_basename     => 1,
-        include_device_id    => 0,
-        include_inode        => 0,
-        include_link_count   => 0,
-        include_owner_uid    => 1,
-        include_group_gid    => 1,
-        include_permissions  => 1,
-        include_epoch_modify => 0,
-        include_file_hash    => 0,
-        include_our_tag      => '',
-    );
+    my $default_cfg = { ### these are sane for any file... 
+        _full_path    => 1,        # canonical abs path; covers basename implicitly
+        _basename     => 1,        # ← harmless duplication due to full-path-rule, keeps UX simple
+        _device_id    => 1,        # same file restored on another fs is NOT OK !
+        _inode        => 1,        # inode must match; detects “replace-in-place” tricks - any updates must use same inode
+        _link_count   => 1,        # hard-link anomalies show up
+        _owner_uid    => 1,        # root→non-root or vice-versa trips digest
+        _group_gid    => 1,        # same for group
+        _permissions  => 1,        # mode bits (suid, sgid, +x) are critical
+        _epoch_modify => 1,        # mtime drift often indicates tampering    - updates would fail without modification
+        _file_hash    => 1,        # sample-based BLAKE2b-256 of the contents - updates would fail without modification
+    };
 
-    if ( defined $user_cfg && ref $user_cfg eq 'HASH' ) {
-        @default_cfg{ keys %{$user_cfg} } = values %{$user_cfg};
+    ## Double check that user supplied values over-write the default, non-supplied values are default assigned.
+    if (defined $user_cfg && ref($user_cfg) eq 'HASH') {
+        @$default_cfg{ keys %$user_cfg } = values %$user_cfg;
     }
-    return %default_cfg;
+
+    return $default_cfg;
 }
 
 #------------------------------------------------------------------------------
@@ -93,28 +98,28 @@ sub __build_blob {
     my $parts = 0;
     my $append = sub { $blob .= $_[0]; ++$parts };
 
-    if ( $cfg_hr->{include_full_path} ) {
+    if ( $cfg_hr->{_full_path} ) {
         $append->("\0fn:$file\0");
     }
-    elsif ( $cfg_hr->{include_basename} ) {
+    elsif ( $cfg_hr->{_basename} ) {
         $append->("\0bn:" . basename($file) . "\0");
     }
 
-    $append->("\0dev:$st_aref->[0]\0")      if $cfg_hr->{include_device_id};
-    $append->("\0ino:$st_aref->[1]\0")      if $cfg_hr->{include_inode};
-    $append->("\0nlink:$st_aref->[3]\0")    if $cfg_hr->{include_link_count};
-    $append->("\0mod:$st_aref->[9]\0")      if $cfg_hr->{include_epoch_modify};
-    $append->("\0gid:$st_aref->[5]\0")      if $cfg_hr->{include_group_gid};
-    $append->("\0tag:$cfg_hr->{include_our_tag}\0")
-      if length $cfg_hr->{include_our_tag};
-    $append->("\0uid:$st_aref->[4]\0")      if $cfg_hr->{include_owner_uid};
+    $append->("\0dev:$st_aref->[0]\0")      if $cfg_hr->{_device_id};
+    $append->("\0ino:$st_aref->[1]\0")      if $cfg_hr->{_inode};
+    $append->("\0nlink:$st_aref->[3]\0")    if $cfg_hr->{_link_count};
+    $append->("\0mod:$st_aref->[9]\0")      if $cfg_hr->{_epoch_modify};
+    $append->("\0gid:$st_aref->[5]\0")      if $cfg_hr->{_group_gid};
+    $append->("\0tag:$cfg_hr->{_our_tag}\0")
+      if length $cfg_hr->{_our_tag};
+    $append->("\0uid:$st_aref->[4]\0")      if $cfg_hr->{_owner_uid};
 
-    if ( $cfg_hr->{include_permissions} ) {
+    if ( $cfg_hr->{_permissions} ) {
         my $perm = sprintf "%04o", $st_aref->[2] & 07777;
         $append->("\0per:$perm\0");
     }
 
-    if ( $cfg_hr->{include_file_hash} ) {
+    if ( $cfg_hr->{_file_hash} ) {
         my $data_part = "\0dat:";
         if ( $initial_size == 0 ) {
             $data_part .= '';
@@ -243,4 +248,3 @@ sub __safe_stat {
 }
 
 1;  # End of fast_file_hash.pm
-
