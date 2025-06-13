@@ -169,18 +169,6 @@ sub normalize_integrity_cfg {
     }
 }
 
-sub __delete__encode_cfg_to_codes {
-    my ($cfg) = @_;
-    [ map { $ATTR_TO_CODE{$_} } grep { $cfg->{$_} } sort keys %$cfg ];
-}
-
-sub __delete__decode_codes_to_cfg {
-    my ($codes) = @_;
-    my %cfg; $cfg{$CODE_MAP{$_}} = 1 for @$codes;
-    \%cfg;
-}
-
-
 sub encode_cfg_to_codes {
     my ($cfg) = @_;
     # include every attr, 1 if set, 0 if not
