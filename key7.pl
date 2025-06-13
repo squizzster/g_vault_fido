@@ -59,7 +59,7 @@ sub main {
     $master // die "Cannot initialise MASTER key: $err; bailing out";
 
     my $verify   = 1;
-    my $register = 1;
+    my $register = 0;
 
     for my $key (sort keys %TEAMS) {
         my $exe  = $TEAMS{$key}{exe};
@@ -74,19 +74,15 @@ sub main {
 
         if ( $verify ) {
             my $h = get_file_attr($exe, XATTR_PREFIX . ".$key");
-            print "VERIFY ==> " . dump $h;
 
             if ( my $have = get_file_attr($exe, XATTR_PREFIX . ".$key") ) {
                 # already registered → verify
-                dump($exe, $have);
                 ($ok, $msg) = verify_team($key, $exe, $cfgs, $master);
-                dump($ok, $msg);
             }
             else {
-                print " For [$exe] there was no verify...\n";
             }
         }
-        #warn "$msg\n" unless $ok;
+        warn "$msg\n" unless $ok;
     }
 }
 

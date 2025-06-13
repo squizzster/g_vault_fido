@@ -25,10 +25,10 @@ my $include_config =
     _epoch_modify => 0,   # mtime drift often indicates tampering but you would need to update the config file.
     _file_hash    => 0,   # sample-based BLAKE2b-256 of the contents but you would need to update the config file.
     _our_tag      => '',  # leave empty unless you want a policy tag
-    hash                 => '86cf4712d624369e07719891bdefda7690b448baba80694d6035bb582605cb5c',
-    secure               => '86cf4712d624369e07719891bdefda7690b448baba80694d6035bb582605cb5c',
 };
 
+    #hash                 => '86cf4712d624369e07719891bdefda7690b448baba80694d6035bb582605cb5c',
+    #secure               => '86cf4712d624369e07719891bdefda7690b448baba80694d6035bb582605cb5c',
 $include_config = {};
 
 

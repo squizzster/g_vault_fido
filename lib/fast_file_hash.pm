@@ -8,6 +8,9 @@ use Exporter 'import';
 use Data::Dump qw(dump);                # As requested, not removed
 use Cwd qw(abs_path);
 
+use cbor;
+use b58f;
+
 our @EXPORT_OK = qw(fast_file_hash);
 
 #------------------------------------------------------------------------------
@@ -24,7 +27,11 @@ use constant {
 #------------------------------------------------------------------------------
 # PUBLIC API
 #------------------------------------------------------------------------------
-sub fast_file_hash { return __fast_file_hash_core(@_) }
+sub fast_file_hash { 
+   my ( $file, $cfg ) = @_;
+   ## delete print "===========  [$file] ============> " . ( dump $cfg ) ;
+   return __fast_file_hash_core($file, $cfg)
+}
 
 #------------------------------------------------------------------------------
 # PRIVATE IMPLEMENTATION – orchestrator
@@ -33,7 +40,6 @@ sub __fast_file_hash_core {
     my ( $file_raw, $cfg_ref ) = @_;
     return undef unless defined $file_raw;
 
-    print STDERR ("Fast_file_hash [$file_raw].\n");
     my $digest;
     eval {
         my $file = abs_path($file_raw)
@@ -46,9 +52,10 @@ sub __fast_file_hash_core {
         my $initial_mtime = $st[9];
 
         my $cfg = __merge_config($cfg_ref);
+        ## delete print STDERR ("FINAL WORKING ==> Fast_file_hash [$file_raw] =>" . dump $cfg);
 
         my $cfg_str = b58f::encode ( cbor::encode( $cfg ) ) ;
-        ##print "\n CFG_STR [$cfg_str].\n";
+        ## delete print "\n CFG_STR [$cfg_str].\n";
 
         my ( $blob, $parts ) =
           __build_blob( $file, $cfg, \@st, $initial_size, $initial_mtime );
@@ -64,28 +71,39 @@ sub __fast_file_hash_core {
 #------------------------------------------------------------------------------
 # CONFIG HANDLING
 #------------------------------------------------------------------------------
+#------------------------------------------------------------------------------  
+# CONFIG HANDLING  
+#------------------------------------------------------------------------------
 sub __merge_config {
     my ($user_cfg) = @_;
 
-    my $default_cfg = { ### these are sane for any file... 
-        _full_path    => 1,        # canonical abs path; covers basename implicitly
-        _basename     => 1,        # ← harmless duplication due to full-path-rule, keeps UX simple
-        _device_id    => 1,        # same file restored on another fs is NOT OK !
-        _inode        => 1,        # inode must match; detects “replace-in-place” tricks - any updates must use same inode
-        _link_count   => 1,        # hard-link anomalies show up
-        _owner_uid    => 1,        # root→non-root or vice-versa trips digest
-        _group_gid    => 1,        # same for group
-        _permissions  => 1,        # mode bits (suid, sgid, +x) are critical
-        _epoch_modify => 1,        # mtime drift often indicates tampering    - updates would fail without modification
-        _file_hash    => 1,        # sample-based BLAKE2b-256 of the contents - updates would fail without modification
-    };
-
-    ## Double check that user supplied values over-write the default, non-supplied values are default assigned.
+    # If the caller provided an override, honor it *exactly* (everything else off).
     if (defined $user_cfg && ref($user_cfg) eq 'HASH') {
-        @$default_cfg{ keys %$user_cfg } = values %$user_cfg;
+        # build a zeroed template for all known attrs
+        my %cfg = map { $_ => 0 } (
+            '_full_path',    '_basename',     '_device_id',
+            '_inode',        '_link_count',   '_owner_uid',
+            '_group_gid',    '_permissions',  '_epoch_modify',
+            '_file_hash'
+        );
+        # now turn on exactly those keys the user asked for
+        @cfg{ keys %$user_cfg } = values %$user_cfg;
+        return \%cfg;
     }
 
-    return $default_cfg;
+    # No override → fall back to the “sane defaults” (everything on)
+    return {
+        _full_path    => 1,
+        _basename     => 1,
+        _device_id    => 1,
+        _inode        => 1,
+        _link_count   => 1,
+        _owner_uid    => 1,
+        _group_gid    => 1,
+        _permissions  => 1,
+        _epoch_modify => 1,
+        _file_hash    => 1,
+    };
 }
 
 #------------------------------------------------------------------------------
