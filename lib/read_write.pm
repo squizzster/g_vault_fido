@@ -4,30 +4,14 @@ use warnings;
 use Crypt::Misc qw(read_rawfile write_rawfile);
 use Carp qw(carp);
 
-sub read {
-    my ($file) = @_;
-    return if not defined $file;
-    my $data;
-    eval { $data = read_rawfile($file) };
-    if ($@) {
-        carp "read_rawfile failed: [$file].";
-        return undef;
-    }
-    return $data;
+sub read  {
+    my ($file) = @_; return unless $file;
+    eval { Crypt::Misc::read_rawfile($file) } // ( carp "read_rawfile failed: [$file]", undef );
 }
 
 sub write {
-    my ($file, $data) = @_;
-    return if not defined $file;
-    return if not defined $data;
-    my $ok;
-    eval { $ok = write_rawfile($file, $data) };
-    if ($@) {
-        carp "write_rawfile failed: [$file].";
-        return undef;
-    }
-    return $ok;
+    my ( $file, $data ) = @_; return unless $file && defined $data;
+    eval { Crypt::Misc::write_rawfile( $file, $data ) } // ( carp "write_rawfile failed: [$file]", undef );
 }
 
 1;
-

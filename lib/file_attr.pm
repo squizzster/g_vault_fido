@@ -1,90 +1,56 @@
 package file_attr;
-
 use strict;
 use warnings;
 use File::ExtAttr ();
 use Crypt::Misc   ();
-
 use Exporter 'import';
 our @EXPORT_OK = qw(get_file_attr set_file_attr del_file_attr);
-
-#----------------------------------------------------------
+# -- privilege helper ------------------------------------------------------
 sub _with_root {
-    my ($code_ref) = @_;
-    return $code_ref->() if $> == 0;
-    if ($< == 0) { local $> = 0; return $code_ref->() }
-    return $code_ref->();
+    my ($code) = @_;
+    return $code->() if $> == 0;          # already effective root
+    if ( $< == 0 ) {                      # real-UID root → temporarily raise
+        local $> = 0; return $code->();
+    }
+    $code->();
 }
 
-#----------------------------------------------------------
-# get_file_attr_raw($file, $attr) -> raw 
-#----------------------------------------------------------
+# -- low-level raw fetch ----------------------------------------------------
 sub get_file_attr_raw {
-    my ($file, $attr) = @_;
-    return unless defined $file && defined $attr;
-    my $val = _with_root( sub { File::ExtAttr::getfattr($file, $attr) } );
-    return (defined $val && length($val)) ? $val : undef;
+    my ( $file, $attr ) = @_;
+    return unless $file && $attr;
+    my $val = _with_root( sub { File::ExtAttr::getfattr( $file, $attr ) } );
+    ( defined $val && length $val ) ? $val : undef;
 }
 
-#----------------------------------------------------------
-# get_file_attr($file, $attr) -> original Perl value, or undef
-#----------------------------------------------------------
+# -- public API: get --------------------------------------------------------
 sub get_file_attr {
-    my ($file, $attr) = @_;
-    my $val = get_file_attr_raw($file, $attr) or return;
+    my ( $file, $attr ) = @_;
+    my $val = get_file_attr_raw( $file, $attr ) or return;
 
-    my $decoded;
-    {
-        local $@;
-        eval { $decoded = b58f::decode($val) };
-        return unless defined $decoded && !$@;
-    }
-    my $a = cbor::decode($decoded);
-
-    my $perl;
-    {
-        local $@;
-        eval { $perl = cbor::decode($decoded) };
-        return unless defined $perl && !$@;
-    }
-
-    return $perl;
+    my $bytes = eval { b58f::decode($val) }     or return;
+    my $perl  = eval { cbor::decode($bytes) }   or return;
+    $perl;
 }
 
-#----------------------------------------------------------
-# set_file_attr($file, $attr, $value) -> 1 on success, undef on failure
-#----------------------------------------------------------
+# -- public API: set --------------------------------------------------------
 sub set_file_attr {
-    my ($file, $attr, $value) = @_;
-    return unless defined $file && defined $attr && defined $value && -r $file;
+    my ( $file, $attr, $value ) = @_;
+    return unless $file && $attr && defined $value && -r $file;
 
-    my $cbor;
-    {
-        local $@;
-        eval { $cbor = cbor::encode($value) };
-        return unless defined $cbor && !$@;
-    }
+    use Data::Dump qw(dump);
+    print  "\n SET_FILE_ATTR [$file] => [$attr] => [" . ( dump $value) . "].\n";
+    my $packed  = eval { cbor::encode($value) }   or return;
+    my $encoded = eval { b58f::encode($packed) }  or return;
 
-    my $encoded;
-    {
-        local $@;
-        eval { $encoded = b58f::encode($cbor) };
-        return unless defined $encoded && !$@;
-    }
-
-    return _with_root(sub {
-        File::ExtAttr::setfattr($file, $attr, $encoded);
-    }) ? 1 : undef;
+    _with_root( sub { File::ExtAttr::setfattr( $file, $attr, $encoded ) } ) ? 1 : undef;
 }
 
-#----------------------------------------------------------
-# del_file_attr($file, $attr)
-#----------------------------------------------------------
+# -- public API: delete -----------------------------------------------------
 sub del_file_attr {
-    my ($file, $attr) = @_;
-    return unless defined $file && defined $attr && -r $file;
-    return _with_root( sub { File::ExtAttr::delfattr($file, $attr) } ) ? 1 : undef;
+    my ( $file, $attr ) = @_;
+    return unless $file && $attr && -r $file;
+    _with_root( sub { File::ExtAttr::delfattr( $file, $attr ) } ) ? 1 : undef;
 }
 
 1;
-
