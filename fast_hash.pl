@@ -14,22 +14,22 @@ use fast_file_hash qw(fast_file_hash);
 
 my $include_config =
 {
-    _full_path    => 1,   # canonical abs path; covers basename implicitly
+    _full_path    => 0,   # canonical abs path; covers basename implicitly
     _basename     => 1,   # ← harmless duplication due to full-path-rule, keeps UX simple
     _device_id    => 0,   # portability: same file restored on another fs OK
-    _inode        => 1,   # inode must match; detects “replace-in-place” tricks - you must update with same inode
-    _link_count   => 1,   # hard-link anomalies show up
-    _owner_uid    => 1,   # root→non-root or vice-versa trips digest
-    _group_gid    => 1,   # same for group
-    _permissions  => 1,   # mode bits (suid, sgid, +x) are critical
+    _inode        => 0,   # inode must match; detects “replace-in-place” tricks - you must update with same inode
+    _link_count   => 0,   # hard-link anomalies show up
+    _owner_uid    => 0,   # root→non-root or vice-versa trips digest
+    _group_gid    => 0,   # same for group
+    _permissions  => 0,   # mode bits (suid, sgid, +x) are critical
     _epoch_modify => 0,   # mtime drift often indicates tampering but you would need to update the config file.
     _file_hash    => 0,   # sample-based BLAKE2b-256 of the contents but you would need to update the config file.
-    _our_tag      => '',  # leave empty unless you want a policy tag
 };
 
     #hash                 => '86cf4712d624369e07719891bdefda7690b448baba80694d6035bb582605cb5c',
     #secure               => '86cf4712d624369e07719891bdefda7690b448baba80694d6035bb582605cb5c',
-$include_config = {};
+
+#$include_config = {};
 
 
 # You can override defaults by passing a second argument as a JSON or key=value string,
