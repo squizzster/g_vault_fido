@@ -68,6 +68,7 @@ my %FILE_INTEGRITY_DEFAULTS = (
     },
 
     '/tmp/what_ever.txt' => MINIMAL,
+    '/home/marko/x.txt' => MINIMAL,
 
     # Array-style (short-codes) also allowed:
     # '/var/lib/important.db' => [qw(fp bn di fh)],
@@ -88,7 +89,7 @@ my %TEAMS = (
         executable => '/usr/bin/cat',
         integrity  => PARANOID,
         configs    => [
-            { file => '/tmp/hello_1.txt', integrity => [qw(fp bn di in lc ou og pe em fh)] },
+            { file => '/tmp/hello_1.txt', integrity => [qw(xx fp bn di in lc ou og pe em fh)] },
             { file => '/tmp/hello_2.txt', integrity => [qw(fp bn di in lc ou og pe em fh)] },
             { file => '/etc/mysql.key',   integrity => [qw(fp bn di in lc ou og pe em fh)] },
             { file => '/tmp/what_ever.txt'                                                 },
@@ -101,6 +102,7 @@ my %TEAMS = (
         configs    => [
             { file => '/tmp/hello_again.txt', integrity => [qw(fp bn di in lc ou og pe em fh)] },
             { file => '/etc/mysql.key',       integrity => [qw(fp bn di in lc ou og pe em fh)] },
+            { file => '/home/marko/x.txt'                                                      },
         ],
     },
 );
@@ -116,7 +118,7 @@ sub main {
     $master // die "Cannot initialise MASTER key: $err";
 
     my $verify   = 1;
-    my $register = 0;   # ← your original default
+    my $register = 1;   # ← your original default
 
     for my $team (sort keys %TEAMS) {
         my $ref = $TEAMS{$team};
