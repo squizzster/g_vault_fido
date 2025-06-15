@@ -44,26 +44,26 @@ my %CODE_MAP = (
 );
 my %ATTR_TO_CODE = reverse %CODE_MAP;
 
-sub RENAME_ONLY      () { state $C = { _basename => 1 }; $C }
+sub BASENAME_ONLY      () { state $C = { _basename => 1 }; $C }
 
-sub LOCATION_STATIC  () { state $C = {
+sub PATH_PERMS  () { state $C = {
     _full_path   => 1, _basename    => 1,
     _owner_uid   => 1, _group_gid   => 1, _permissions => 1,
 }; $C }
 
-sub FIXED_INODE_META () { state $C = {
+sub INODE_PERMS () { state $C = {
     _device_id   => 1, _inode       => 1, _link_count  => 1,
     _full_path   => 1, _basename    => 1,
     _owner_uid   => 1, _group_gid   => 1, _permissions => 1,
 }; $C }
 
-sub CONTENT_STATIC   () { state $C = {
+sub CONTENT_PERMS   () { state $C = {
     _full_path   => 1, _basename    => 1,
     _owner_uid   => 1, _group_gid   => 1, _permissions => 1,
     _file_hash   => 1,
 }; $C }
 
-sub HASH_ROAMER      () { state $C = { _file_hash => 1 }; $C }
+sub CONTENT_ONLY      () { state $C = { _file_hash => 1 }; $C }
 
 sub FORENSIC_FREEZE  () { state $C = { map { $_ => 1 } values %CODE_MAP }; $C }
 
@@ -71,9 +71,9 @@ sub FORENSIC_FREEZE  () { state $C = { map { $_ => 1 } values %CODE_MAP }; $C }
 
 # ─── FILE DEFINITIONS ─────────────────────────────────────────────────────
 my %FILES = (
-    '/usr/sbin/mysqld' => RENAME_ONLY,
-    '/usr/bin/cat'     => LOCATION_STATIC,
-    '/usr/sbin/init'   => FIXED_INODE_META,
+    '/usr/sbin/mysqld' => CONTENT_ONLY,
+    '/usr/bin/cat'     => PATH_PERMS,
+    '/usr/sbin/init'   => INODE_PERMS,
     '/tmp/change_me'   => FORENSIC_FREEZE,
 );
 
@@ -338,28 +338,42 @@ sub verify_exe_config {
     undef;
 }
 
-# ══════════════════════════════════════════════════════════════════════════
-# ─── Matrix printer (fixed widths) ----------------------------------------
 sub verify_linkage {
     my @rows;
+
+    # Precompute mapping code-strings → spec names
+    my %SPEC_NAMES;
+    for my $name (qw(BASENAME_ONLY PATH_PERMS INODE_PERMS CONTENT_PERMS CONTENT_ONLY FORENSIC_FREEZE)) {
+        no strict 'refs';
+        my $dec   = &{$name}();
+        my $codes = encode_cfg_to_codes($dec);
+        $SPEC_NAMES{ join(',', @$codes) } = $name;
+    }
 
     for my $team (sort keys %TEAMS) {
         my $exe  = $TEAMS{$team}{pid};
         my $meta = load_team_attr($exe, _attr(XATTR_TEAM, $team))
             or next;
 
-        # if we had a parent‐PID, mark it with '*' to show we checked it
+        # Parent PID path and its spec name
         my $pp_raw  = $meta->{ppid}{path} // '';
         my $pp_path = $pp_raw ? "$pp_raw [i]" : '';
+        my $pp_spec_name = '';
+        if ($meta->{ppid}{spec}) {
+            my $pp_codes = join(',', @{ $meta->{ppid}{spec} });
+            $pp_spec_name = $SPEC_NAMES{$pp_codes} // 'CUSTOM';
+        }
 
-        # UID list, WalkBack flag, and integrity spec codes
+        # PID spec name
+        my $spec_str  = join(',', @{ $meta->{spec} });
+        my $pid_spec_name = $SPEC_NAMES{$spec_str} // 'CUSTOM';
+
+        # Other flags
         my $uid_list = @{ $meta->{uid} // [] }
                      ? join(',', @{ $meta->{uid} })
                      : '';
-        my $walk     = $TEAMS{$team}{walk_back} ? 'yes' : 'no';
-        my $spec_str = join(',', @{ $meta->{spec} });
+        my $walk      = $TEAMS{$team}{walk_back} ? 'yes' : 'no';
 
-        # expand each config pattern
         for my $pat (@{ $meta->{patterns} }) {
             my @matches = ($pat =~ /[\*\?\[]/)
                           ? map { abs_path($_) } glob($pat)
@@ -369,72 +383,72 @@ sub verify_linkage {
             for my $cfg (@matches) {
                 my $exists   = -e $cfg ? 'yes' : 'no';
                 my $readable = -r $cfg ? 'yes' : 'no';
-                my $result   = ($exists eq 'yes' && $readable eq 'yes'
-                               && verify_exe_config($exe,$cfg))
+                my $perms    = (stat($cfg))[2] // 0;
+                   $perms    = sprintf "%04o", $perms & 07777;
+                my $result   = ($exists eq 'yes'
+                            && $readable eq 'yes'
+                            && verify_exe_config($exe, $cfg))
                               ? '✓' : '✗';
 
                 push @rows, [
-                    $team,
-                    $exe,
-                    $pp_path,
-                    $uid_list,
-                    $walk,
-                    $spec_str,
-                    $cfg,
-                    $exists,
-                    $readable,
-                    $result,
+                    $team,           # Team
+                    $exe,            # PID
+                    $pid_spec_name,  # PID_SpecName
+                    $pp_path,        # PPID
+                    $pp_spec_name,   # PPID_SpecName
+                    $uid_list,       # UIDs
+                    $walk,           # WalkBack
+                    $perms,          # Permissions
+                    $spec_str,       # Spec (PID codes)
+                    $cfg,            # Config
+                    $exists,         # Exists
+                    $readable,       # Readable
+                    $result,         # Result
                 ];
             }
         }
     }
 
-    # headers including our PPID column
-    my @hdrs   = qw(Team PID PPID UIDs WalkBack Spec Config Exists Readable Result);
+    # Headers with both PID and PPID spec-names
+    my @hdrs = qw(
+        Team
+        PID
+        PID_SpecName
+        PPID
+        PPID_SpecName
+        UIDs
+        WalkBack
+        Permissions
+        Spec
+        Config
+        Exists
+        Readable
+        Result
+    );
     my @widths = map { length $_ } @hdrs;
 
-    # compute column widths
-    # compute column widths
+    # Compute column widths
     for my $r (@rows) {
-        # for each column index in this row...
         for my $i (0 .. $#$r) {
             my $len = length $r->[$i];
-            # if this cell is wider than our current max, update it
             $widths[$i] = $len if $len > $widths[$i];
         }
     }
 
-    # print header
-    say "\n=== Linkage Verification Matrix ===";
-    printf "%-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %s\n",
-        $widths[0], $hdrs[0],
-        $widths[1], $hdrs[1],
-        $widths[2], $hdrs[2],
-        $widths[3], $hdrs[3],
-        $widths[4], $hdrs[4],
-        $widths[5], $hdrs[5],
-        $widths[6], $hdrs[6],
-        $widths[7], $hdrs[7],
-        $widths[8], $hdrs[8],
-        $hdrs[9];
-    say '-' x (sum(@widths) + 3*(scalar @hdrs - 1) + length $hdrs[-1]);
+    # Dynamic printf format
+    my $fmt = join(' | ', map { "%-*s" } @hdrs ) . "\n";
 
-    # print rows
+    # Print header
+    say "\n=== Linkage Verification Matrix ===";
+    printf $fmt, map { ($widths[$_], $hdrs[$_]) } 0..$#hdrs;
+    say '-' x (sum(@widths) + 3 * (scalar(@hdrs) - 1));
+
+    # Print rows
     for my $r (@rows) {
-        printf "%-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %s\n",
-            $widths[0], $r->[0],
-            $widths[1], $r->[1],
-            $widths[2], $r->[2],
-            $widths[3], $r->[3],
-            $widths[4], $r->[4],
-            $widths[5], $r->[5],
-            $widths[6], $r->[6],
-            $widths[7], $r->[7],
-            $widths[8], $r->[8],
-            $r->[9];
+        printf $fmt, map { ($widths[$_], $r->[$_]) } 0..$#hdrs;
     }
 
-    say '-' x (sum(@widths) + 3*(scalar @hdrs - 1) + length $hdrs[-1]);
+    say '-' x (sum(@widths) + 3 * (scalar(@hdrs) - 1));
 }
 
 sub sum { my $s = 0; $s += $_ for @_; return $s }

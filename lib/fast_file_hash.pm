@@ -16,8 +16,9 @@ use constant {
     MID_CHUNKS => 100,          # number of middle slices
     SLOP       => 100 * 1024,   # threshold for whole-file hash
 };
-
-use constant OUR_SEPERATOR => "\0";
+# Blob-separator (correct spelling); keep old name as alias for callers
+use constant OUR_SEPARATOR  => "\0";
+use constant OUR_SEPERATOR  => OUR_SEPARATOR;   # legacy alias for any callers
 
 # ─── Public API ───────────────────────────────────────────────────────────
 sub fast_file_hash { __fast_file_hash_core(@_) }
@@ -51,7 +52,6 @@ sub __fast_file_hash_core {
 }
 
 # ─── Config handling ------------------------------------------------------
-# fast_file_hash.pm  – only the top of __merge_config() changes
 sub __merge_config {
     my ($user_cfg) = @_;
 
@@ -87,7 +87,7 @@ sub __merge_config {
 sub __build_blob {
     my ( $file, $cfg, $st, $size, $mtime ) = @_;
 
-    my $sep = OUR_SEPERATOR;
+    my $sep = OUR_SEPARATOR;
     my $blob  = '#__g-voice.ai__';
     my $parts = 0;
 
@@ -157,8 +157,18 @@ sub __should_slurp { $_[0] <= FIRST + MID_TOTAL + LAST + SLOP }
 sub __read_exact {
     my ( $fh, $len ) = @_;
     return '' unless $len;
-    my $buf; my $bytes = sysread( $fh, $buf, $len );
-    ( defined $bytes && $bytes == $len ) ? $buf : undef;
+
+    my $buf  = '';
+    my $read = 0;
+    while ( $read < $len ) {
+        my $want  = $len - $read;
+        my $bytes = sysread( $fh, my $chunk, $want );
+        return undef          unless defined $bytes;   # hard error
+        last                    if     $bytes == 0;    # EOF
+        $buf  .= $chunk;
+        $read += $bytes;
+    }
+    return $read == $len ? $buf : undef;
 }
 
 sub __collect_first { sysseek( $_[0], 0, SEEK_SET ) && __read_exact( $_[0], FIRST ) }
@@ -169,14 +179,19 @@ sub __collect_mid {
     return '' unless $mid_chunk;
 
     my $range = $size - FIRST - LAST; return '' if $range <= 0;
-    my $step  = ( MID_CHUNKS > 1 && $range > $mid_chunk )
-              ? ( $range - $mid_chunk ) / ( MID_CHUNKS - 1 )
-              : 0;
+
+    # Use floating-point to avoid a zero-step when $range ≈ $mid_chunk
+    my $step = 0;
+    if ( MID_CHUNKS > 1 && $range > $mid_chunk ) {
+        $step = ( $range - $mid_chunk ) / ( MID_CHUNKS - 1 );
+    }
 
     my $buf = '';
     for my $i ( 0 .. MID_CHUNKS - 1 ) {
-        my $offset = MID_CHUNKS == 1 ? int( $range / 2 ) - int( $mid_chunk / 2 )
-                                     : int( $step * $i );
+        my $offset = MID_CHUNKS == 1
+                   ? int( $range / 2 ) - int( $mid_chunk / 2 )
+                   : int( $step * $i + 0.5 );   # round — avoids duplicates
+
         $offset = 0 if $offset < 0;
 
         my $off = FIRST + $offset;
