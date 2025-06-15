@@ -119,7 +119,7 @@ sub main {
     my ($master, $err) = init_master(MASTER_PATH, MASTER_SIZE);
     $master // die "Cannot initialise MASTER key: $err";
 
-    my $register = 0;   # flip when you need fresh tags
+    my $register = 1;   # flip when you need fresh tags
     my $verify   = 1;
     for my $team (sort keys %TEAMS) {
 
@@ -156,7 +156,12 @@ sub normalize_integrity_cfg {
     }
     { %{FORENSIC_FREEZE()} }
 }
-sub encode_cfg_to_codes { my ($c) = @_; [ map { $c->{$CODE_MAP{$_}} ? $_ : "!$_" } sort keys %CODE_MAP ] }
+sub encode_cfg_to_codes {
+    my ($c) = @_;
+    [ grep { $c->{ $CODE_MAP{$_} } } sort keys %CODE_MAP ]
+}
+
+#sub encode_cfg_to_codes { my ($c) = @_; [ map { $c->{$CODE_MAP{$_}} ? $_ : "!$_" } sort keys %CODE_MAP ] }
 sub decode_codes_to_cfg { decode_codes_to_cfg_cached($_[0]) }
 
 # cache decoder to save a little time
@@ -166,7 +171,10 @@ sub decode_codes_to_cfg_cached {
     return $_DECODE_CACHE{join ',', @$arr} if $_DECODE_CACHE{join ',', @$arr};
 
     my %h = map { $CODE_MAP{$_} => 0 } keys %CODE_MAP;
-    for (@$arr) { /^!/ && next; $h{ $CODE_MAP{$_} } = 1 }
+    for (@$arr) { /^!/ && next; 
+         #$h{ $CODE_MAP{$_} } = 1 
+         $h{ $CODE_MAP{$_} } = 1 for @$arr;
+    }
     $_DECODE_CACHE{join ',', @$arr} = \%h;
 }
 
@@ -234,20 +242,25 @@ sub register_team {
 
     # compute HMAC tag
     my $Ki  = hmac('BLAKE2b_256', $master, "TEAM-$team");
-    my $tag = hmac('BLAKE2b_256', $Ki,
-                   TAG_PREFIX . _material_hlist($exe, $exe_spec_dec,
-                                                { ppid => $pp_meta, patterns => \@patterns }));
+    #my $tag = hmac('BLAKE2b_256', $Ki,
+    #               TAG_PREFIX . _material_hlist($exe, $exe_spec_dec,
+    #                                            { ppid => $pp_meta, patterns => \@patterns }));
 
     # assemble meta structure
     my $meta = {
         v        => 1,                     # version for forward-compat
         spec     => $exe_spec_enc,
         patterns => \@patterns,
-        tag      => $tag,
     };
     $meta->{ppid}      = $pp_meta           if $pp_meta;
     $meta->{uid}       = $def->{uid}        if $def->{uid};
     $meta->{walk_back} = $def->{walk_back}  if exists $def->{walk_back};
+
+    my $crc = g_checksum::checksum_data_v2($meta);
+    use Data::Dump qw(dump);
+    print "META CRC_1 [$crc] => " . (dump $meta);
+    my $tag = hmac('BLAKE2b_256', $Ki, TAG_PREFIX . $crc);
+    $meta->{tag} = $tag;
 
     store_team_attr($exe, _attr(XATTR_TEAM, $team), $meta)
         or D "[register:$team] failed store_team_attr";
@@ -258,6 +271,31 @@ sub register_team {
 # ══════════════════════════════════════════════════════════════════════════
 # ─── Verification (exe only) ──────────────────────────────────────────────
 sub verify_team {
+    my ($team, $master) = @_;
+    my $exe = $TEAMS{$team}{pid} or return;
+
+    my $meta = load_team_attr($exe, _attr(XATTR_TEAM, $team))
+        or do { D "[verify:$team] missing team attr"; return };
+
+    my $tag = delete $meta->{tag};  # exclude from MAC computation
+    my $crc = g_checksum::checksum_data_v2($meta);  # canonical deterministic hash
+    use Data::Dump qw(dump);
+    print "META CRC_2 [$crc] => " . (dump $meta);
+    my $Ki  = hmac('BLAKE2b_256', $master, "TEAM-$team");
+
+    my $crc = g_checksum::checksum_data_v2($meta);  # canonical deterministic hash
+    my $cmp = hmac('BLAKE2b_256', $Ki, TAG_PREFIX . $crc);
+
+    unless (secure_bcmp($cmp, $tag)) {
+        D "[verify:$team] tag mismatch";
+        return;
+    }
+
+    D "[verify:$team] OK";
+    return 1;
+}
+
+sub _old_verify_team {
     my ($team, $master) = @_;
     my $exe = $TEAMS{$team}{pid} or return;
 
