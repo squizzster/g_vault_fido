@@ -2,11 +2,6 @@
 
 #######  [v1.0 loader]  ########
 use v5.14; use strict;use warnings;use utf8;binmode(STDIN,':encoding(UTF-8)');binmode(STDOUT,':encoding(UTF-8)');binmode(STDERR,':encoding(UTF-8)');$|=1;my$g;use FindBin qw($RealBin $RealScript);BEGIN{$g->{dir}={exe=>"$RealBin/$RealScript",path=>$RealBin,lib=>"$RealBin/lib",conf=>"$RealBin/conf"};-r$g->{dir}{exe}or die"FATAL:$g->{dir}{exe} not found\n";my($u,$gid)=(stat $g->{dir}{exe})[4,5];defined$u or die"FATAL:stat failed\n";$g->{user}={uid=>$u,gid=>$gid}}; BEGIN{($g->{user}{uid}||$g->{user}{gid})&& do{use lib"$g->{dir}{path}/lib";require set_uuid;set_uuid::set_uuid($g->{user}{uid},$g->{user}{gid},1)||die"Failed to drop privileges: $!"}}; use lib $g->{dir}{path}.'/lib';my%seen;my@f=grep{my$b=$_;$b=~s{^.*/}{};!$seen{$b}++}(glob("$g->{dir}{lib}/*.pm"),glob("common_lib/*.pm"));my$e='';eval{for(@f){next unless -f$_&&/\.pm$/;open(my$h,'<',$_)or($e.="Can't open $_: $!\n",next);my$p=0;for(1..10){last unless defined(my$l=<$h>);$p=1,last if$l=~/^\s*package\s+\S+;/}close$h;if($p){(my$m=$_)=~s{^.*/}{};$m=~s/\.pm$//;$m=~s{/}{::}g;eval"require $m" or $e.="Error using $m: $@\n"}else{do$_ or $e.="Error in file $_:[".($@||"Make sure it evaluates to 'true'")."]\n"}}};$e.=$@ if$@;$e and print STDERR"\nCompilation failed:\n$e"and exit 1;undef $e;undef @f;undef %seen; package main; #### [loader done] ####;
-# ==============================  RE-STRUCTURED FIDELITY  ==============================
-# All behaviour, side-effects, and log messages preserved (Law 1).
-# Public surface == ORIGINAL names; each delegates to a private helper.
-# Inline comment tags: AI_CLARIFY / AI_GOOD / AI_BUG / AI_OTHER
-# =====================================================================================
 
 use feature 'say';
 use Log::Any::Adapter;     Log::Any::Adapter->set('Stderr');
@@ -54,12 +49,12 @@ my %CODE_MAP = (
 );
 my %ATTR_TO_CODE = reverse %CODE_MAP;
 
-sub BASENAME_ONLY      () { state $C = { _basename => 1 }; $C }
-sub PATH_PERMS  () { state $C = {
+sub BASENAME_ONLY   () { state $C = { _basename => 1 }; $C }
+sub PATH_PERMS      () { state $C = {
     _full_path   => 1, _basename    => 1,
     _owner_uid   => 1, _group_gid   => 1, _permissions => 1,
 }; $C }
-sub INODE_PERMS () { state $C = {
+sub INODE_PERMS     () { state $C = {
     _device_id   => 1, _inode       => 1, _link_count  => 1,
     _full_path   => 1, _basename    => 1,
     _owner_uid   => 1, _group_gid   => 1, _permissions => 1,
@@ -69,8 +64,8 @@ sub CONTENT_PERMS   () { state $C = {
     _owner_uid   => 1, _group_gid   => 1, _permissions => 1,
     _file_hash   => 1,
 }; $C }
-sub CONTENT_ONLY      () { state $C = { _file_hash => 1 }; $C }
-sub FORENSIC_FREEZE  () { state $C = { map { $_ => 1 } values %CODE_MAP }; $C }
+sub CONTENT_ONLY    () { state $C = { _file_hash => 1 }; $C }
+sub FORENSIC_FREEZE () { state $C = { map { $_ => 1 } values %CODE_MAP }; $C }
 
 # ─── FILE DEFINITIONS ─────────────────────────────────────────────────────
 my %FILES = (
@@ -87,6 +82,7 @@ my %TEAMS = (
         ppid       => '/tmp/change_me',
         walk_back  => 1,
         uid        => [10001, 0, 100],
+        gid        => [10001, 0, 100],
         configs    => [
             '/etc/my.cnf.d/*l*.cnf',
             '/etc/mysql.key',
@@ -94,6 +90,7 @@ my %TEAMS = (
     },
     cat1 => {
         pid     => '/usr/bin/cat',
+        gid     => [10001, 100],
         configs => [
             '/tmp/hello_?.txt',
             '/etc/mysql.key',
@@ -204,6 +201,7 @@ sub _compact_meta {
         t => $m->{tag},
     );
     $c{u} = join(',', @{ $m->{uid} }) if $m->{uid};
+    $c{g} = join(',', @{ $m->{gid} }) if $m->{gid};
     $c{w} = 1                         if $m->{walk_back};
     if (my $pp = $m->{ppid}) {
         $c{P} = $pp->{path};
@@ -221,6 +219,7 @@ sub _expand_meta {
         tag      => $c->{t},
     );
     $m{uid}       = [ split /,/, $c->{u} ] if exists $c->{u};
+    $m{gid}       = [ split /,/, $c->{g} ] if exists $c->{g};
     $m{walk_back} = 1                      if exists $c->{w};
     if (exists $c->{P}) {
         $m{ppid} = {
@@ -299,6 +298,7 @@ sub _rt_build_meta {
     );
     $meta{ppid}      = $pp_meta          if $pp_meta;
     $meta{uid}       = $def->{uid}       if $def->{uid};
+    $meta{gid}       = $def->{gid}       if $def->{gid};
     $meta{walk_back} = $def->{walk_back} if exists $def->{walk_back};
     return \%meta;
 }
@@ -334,7 +334,7 @@ sub _vt_verify {
     my $crc = g_checksum::checksum_data_v2($meta);
     my $cmp = hmac('BLAKE2b_256', $Ki, TAG_PREFIX . $crc);
 
-    unless (secure_bcmp($cmp, $tag)) {
+    unless (bcmp($cmp, $tag)) {
         D "[verify:$team] tag mismatch";
         return;
     }
@@ -392,7 +392,7 @@ sub _vl_verify_linkage {
 }
 sub _vl_table_headers {
     return qw(
-        Team PID PID_SpecName PPID PPID_SpecName UIDs WalkBack
+        Team PID PID_SpecName PPID PPID_SpecName UIDs GIDs WalkBack
         Permissions Spec Config Exists Readable Result
     );
 }
@@ -418,6 +418,7 @@ sub _vl_gather_rows {
         my ($pp_path, $pp_spec_name) = _vl_ppid_columns($meta->{ppid}, $spec_map);
         my $pid_spec_name = $spec_map->{ join(',', @{ $meta->{spec} }) } // 'CUSTOM';
         my $uid_list      = @{ $meta->{uid} // [] } ? join(',', @{ $meta->{uid} }) : '';
+        my $gid_list      = @{ $meta->{gid} // [] } ? join(',', @{ $meta->{gid} }) : '';
         my $walk          = $TEAMS{$team}{walk_back} ? 'yes' : 'no';
         for my $pat (@{ $meta->{patterns} }) {
             my @matches = ($pat =~ /[\*\?\[]/) ? map { abs_path($_) } glob($pat) : ($pat);
@@ -425,7 +426,7 @@ sub _vl_gather_rows {
             for my $cfg (@matches) {
                 push @rows, _vl_row(
                     $team, $exe, $pid_spec_name, $pp_path, $pp_spec_name,
-                    $uid_list, $walk, $meta->{spec}, $cfg
+                    $uid_list, $gid_list, $walk, $meta->{spec}, $cfg
                 );
             }
         }
@@ -441,7 +442,7 @@ sub _vl_ppid_columns {
     return ($path, $name);
 }
 sub _vl_row {
-    my ($team,$exe,$pid_spec,$pp_path,$pp_spec,$uid_list,$walk,$spec,$cfg)=@_;
+    my ($team,$exe,$pid_spec,$pp_path,$pp_spec,$uid_list,$gid_list,$walk,$spec,$cfg)=@_;
     my $exists   = -e $cfg ? 'yes' : 'no';
     my $readable = -r $cfg ? 'yes' : 'no';
     my $perms    = sprintf "%04o", ((stat($cfg))[2] // 0) & 07777;
@@ -454,6 +455,7 @@ sub _vl_row {
         $pp_path,        # PPID
         $pp_spec,        # PPID_SpecName
         $uid_list,       # UIDs
+        $gid_list,       # GIDs
         $walk,           # WalkBack
         $perms,          # Permissions
         join(',', @$spec),# Spec (codes)
@@ -488,11 +490,23 @@ sub init_master {
     die "Master wrong length" unless defined $m && length($m)==$size;
     $m;
 }
-sub secure_bcmp {
-    my ($a,$b)=@_;
+
+sub bcmp {
+    my ($a, $b) = @_;
     return unless defined $a && defined $b && length($a)==length($b);
-    my $d=0; $d |= (ord substr($a,$_,1)) ^ (ord substr($b,$_,1)) for 0..length($a)-1;
-    !$d;
+    return unless $a eq $b;
+    return 1;
+}
+
+sub secure_bcmp {
+    my ($a, $b) = @_;
+
+    return unless defined $a && defined $b && length($a)==length($b);
+
+    my $d = 0;
+    $d |= ord(substr($a, $_, 1)) ^ ord(substr($b, $_, 1)) for 0 .. length($a) - 1;
+
+    return $d ? undef : 1;
 }
 
 # ================== END ==================
