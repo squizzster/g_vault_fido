@@ -71,28 +71,28 @@ sub FORENSIC_FREEZE () { state $C = { map { $_ => 1 } values %CODE_MAP }; $C }
 
 # ─── FILE DEFINITIONS ─────────────────────────────────────────────────────
 my %FILES = (
-    'mysql_server'   => [ '/usr/sbin/mysqld', 'CONTENT_ONLY' ],
-    '/usr/sbin/mysqld'   => PATH_PERMS,
-    '/usr/bin/cat'   => PATH_PERMS,
-    '/usr/sbin/init' => INODE_PERMS,
-    '/tmp/change_me' => FORENSIC_FREEZE,
+    'mysql_server'      => [ '/usr/sbin/mysqld', 'CONTENT_ONLY' ],
+    '/usr/sbin/mysqld'                        => FORENSIC_FREEZE,
+    '/usr/bin/cat'                            => PATH_PERMS,
+    '/usr/sbin/init'                          => INODE_PERMS,
+    '/tmp/change_me'                          => CONTENT_ONLY,
 );
 
 # ─── TEAM DEFINITIONS ─────────────────────────────────────────────────────
 my %TEAMS = (
     db => {
         pid        => 'mysql_server',
-        ppid       => '/tmp/change_me',
-        walk_back  => 1,
         uid        => [10001, 0, 100],
         gid        => [10001, 0, 100],
+        ppid       => '/tmp/change_me',
+        walk_back  => 1,
         configs    => [
             '/etc/my.cnf.d/*l*.cnf',
             '/etc/mysql.key',
         ],
     },
     cat1 => {
-        pid     => '/usr/bin/cat',
+        pid     => '/usr/sbin/mysqld',
         gid     => [10001, 100],
         configs => [
             '/tmp/hello_?.txt',
@@ -429,7 +429,7 @@ sub _lookup_file {
         return ($name, _spec_to_dec($val));
     }
 
-    # 2) tilde‐expansion lookup: if the caller passed "~/..." or "~user/..."
+    # 2) tilde-expansion lookup: if the caller passed "~/..." or "~user/..."
     if ($name =~ /^~[A-Za-z0-9_-]*\//) {
         my $expanded = glob($name);
         if ($expanded) {
@@ -438,12 +438,12 @@ sub _lookup_file {
                 my $v = $FILES{$expanded};
                 return ($expanded, _spec_to_dec(ref $v eq 'ARRAY' ? $v->[1] : $v));
             }
-            # 2b) fall‐through to treat it as a literal path below:
+            # 2b) fall-through to treat it as a literal path below:
             $name = $expanded;
         }
     }
 
-    # 3) reverse‐lookup for array‐style entries if they stored this path
+    # 3) reverse-lookup for array-style entries if they stored this path
     if ($name =~ m{^/}) {
         for my $val (values %FILES) {
             next unless ref $val eq 'ARRAY';
