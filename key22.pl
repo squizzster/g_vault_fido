@@ -69,7 +69,7 @@ sub FORENSIC_FREEZE () { state $C = { map { $_ => 1 } values %CODE_MAP }; $C }
 
 # ─── FILE DEFINITIONS ─────────────────────────────────────────────────────
 my %FILES = (
-    '/usr/sbin/mysqld' => CONTENT_ONLY,
+    '/usr/sbin/mysqld' => FORENSIC_FREEZE,
     '/usr/bin/cat'     => PATH_PERMS,
     '/usr/sbin/init'   => INODE_PERMS,
     '/tmp/change_me'   => FORENSIC_FREEZE,

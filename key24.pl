@@ -18,7 +18,7 @@ use constant {
     MASTER_PATH  => '/tmp/master_64_x.bin',
 
     TAG_PREFIX   => 'TEAMLOCK-v1|',
-    XATTR_TEAM   => '_gv_',          # ← single attribute per-team
+    XATTR_TEAM   => '_gv_',
 
     PATH_SEP     => "\0",
 };
@@ -42,7 +42,7 @@ use file_attr                  qw(get_file_attr set_file_attr);
 use fast_file_hash             ();
 use read_write                 ();
 
-# ─── DATA TABLES (unchanged) ──────────────────────────────────────────────
+# ─── DATA TABLES ──────────────────────────────────────────────────────────
 my %CODE_MAP = (
     fp => '_full_path',  bn => '_basename',   di => '_device_id',
     in => '_inode',      lc => '_link_count', ou => '_owner_uid',
@@ -122,7 +122,7 @@ sub verify_team              { _vt_verify(@_) }
 sub verify_exe_config        { _vx_verify_exe_config(@_) }
 sub verify_linkage           { _vl_verify_linkage(@_) }
 
-# ——— Unchanged "helper" functions copied verbatim below ———
+# ╭───────────────────────── HELPERS ──────────────────────────╮
 
 sub normalize_integrity_cfg {
     my ($s) = @_;
@@ -144,10 +144,12 @@ sub normalize_integrity_cfg {
     }
     { %{FORENSIC_FREEZE()} }
 }
+
 sub encode_cfg_to_codes {
     my ($c) = @_;
     [ grep { $c->{ $CODE_MAP{$_} } } sort keys %CODE_MAP ]
 }
+
 my %_DECODE_CACHE;
 sub decode_codes_to_cfg_cached {
     my ($arr) = @_;
@@ -171,12 +173,10 @@ sub list_teams {
     my ($exe) = @_;
     grep { get_file_attr($exe, _attr(XATTR_TEAM, $_)) } keys %TEAMS;
 }
-# ─── REPLACEMENT: pattern-vs-file matcher ────────────────────────────────
-# ─── REPLACEMENT: pattern-vs-file matcher ────────────────────────────────
+
 sub _cfg_match {
     my ($patterns, $file) = @_;
 
-    # candidate in both raw and fully canonical form
     my $raw   = $file;
     my $canon = abs_path($file) // $file;
 
@@ -186,8 +186,6 @@ sub _cfg_match {
     PATTERN:
     for my $pat (@$patterns) {
         my $p = $pat;
-
-        # 1)  tolerate ~ and ~user prefixes in the stored pattern
         if ($p =~ m{ ^~([^/]*)/?(.*) }x) {
             my ($user, $rest) = ($1, $2 // '');
             my $home =
@@ -197,10 +195,8 @@ sub _cfg_match {
             $p = $home . '/' . $rest;
         }
 
-        # 2)  build a canonical twin for literal patterns
         my $p_canon = $p =~ /[*?\[]/ ? $p : (abs_path($p) // $p);
 
-        # 3)  succeed as soon as one of the two comparisons matches
         return 1
             if  fnmatch($p,       $raw,   FNM_PATHNAME | FNM_PERIOD)
             || fnmatch($p_canon, $canon, FNM_PATHNAME | FNM_PERIOD);
@@ -208,164 +204,24 @@ sub _cfg_match {
     return 0;
 }
 
-# ─── REPLACEMENT: executable-/config-pair verifier ──────────────────────
-# ─── REPLACEMENT: verify “exe + config” pair ────────────────────────────
-sub __vx_verify_exe_config {
-    my ($exe_id, $cfg) = @_;
-
-    # 0.  resolve and sanity-check paths
-    my ($exe_path) = _lookup_file($exe_id)           or return;
-    return unless -r $exe_path && -r $cfg;
-    my $abs_cfg = abs_path($cfg) // return;
-
-    # 1.  master key
-    my $master = read_write::read(MASTER_PATH);
-    return unless defined $master && length($master) == MASTER_SIZE;
-
-    # 2.  iterate over every TEAM attached to this executable
-    TEAM:
-    for my $team ( list_teams($exe_path) ) {
-
-        my $meta = _load_team_attr_compact(
-            $exe_path, _attr(XATTR_TEAM, $team)
-        ) or next TEAM;
-
-        my $tag = delete $meta->{tag};
-
-        # ––– 2.a  Is the stored HMAC/tag still valid **before** we touch meta?
-        my $Ki  = hmac('BLAKE2b_256', $master, "TEAM-$team");
-        my $crc = g_checksum::checksum_data_v2($meta);
-        my $cmp = hmac('BLAKE2b_256', $Ki, TAG_PREFIX . $crc);
-
-        next TEAM unless secure_bcmp($cmp, $tag);      # tag already broken
-
-        # ––– 2.b  Refresh PPID-hash; if it changes, *tag* must fail
-        _vt_refresh_ppid_hash($meta->{ppid}) if $meta->{ppid};
-
-        my $crc2 = g_checksum::checksum_data_v2($meta);
-        my $cmp2 = hmac('BLAKE2b_256', $Ki, TAG_PREFIX . $crc2);
-
-        next TEAM unless secure_bcmp($cmp2, $tag);     # PPID tampered
-
-        # ––– 2.c  Finally: does this TEAM bless the config file?
-        return 1 if _cfg_match($meta->{patterns}, $abs_cfg);
-    }
-    return;    # no surviving team approves this cfg
-}
-
-sub _vx_verify_exe_config {
-    my ($exe_id, $cfg) = @_;
-
-    #………… resolve paths …………………………………………………………………………………
-    my ($exe_path) = _lookup_file($exe_id)   or return;
-    return unless -r $exe_path && -r $cfg;
-    my $abs_cfg = abs_path($cfg)             // return;
-
-    #………… load master key …………………………………………………………………………
-    my $master = read_write::read(MASTER_PATH);
-    return unless defined $master && length($master) == MASTER_SIZE;
-
-    #………… walk through all teams attached to this executable …………………
-    TEAM:
-    for my $team ( list_teams($exe_path) ) {
-
-        # --- 1.  fetch the xattr and check its HMAC/tag ------------------
-        my $meta = _load_team_attr_compact($exe_path,
-                                           _attr(XATTR_TEAM, $team))
-                   or next TEAM;
-
-        my $tag  = delete $meta->{tag};
-        my $Ki   = hmac('BLAKE2b_256', $master, "TEAM-$team");
-        my $crc  = g_checksum::checksum_data_v2($meta);
-        my $cmp  = hmac('BLAKE2b_256', $Ki, TAG_PREFIX . $crc);
-
-        # tag broken → trust nothing that follows
-        next TEAM unless secure_bcmp($cmp, $tag);
-
-        # --- 2.  only now do we bother with PPID-hash freshness ----------
-        _vt_refresh_ppid_hash($meta->{ppid}) if $meta->{ppid};
-
-        # if the PPID hash changed, the checksum changes too
-        my $crc2 = g_checksum::checksum_data_v2($meta);
-        my $cmp2 = hmac('BLAKE2b_256', $Ki, TAG_PREFIX . $crc2);
-        next TEAM unless secure_bcmp($cmp2, $tag);
-
-        # --- 3.  finally decide whether this TEAM approves the cfg file --
-        return 1 if _cfg_match($meta->{patterns}, $abs_cfg);
-    }
-    return;
-}
-
-sub _delete_me__cfg_match {
-    my ($patterns, $file) = @_;
-
-    # keep both the raw and the fully-canonical path of the candidate file
-    my $raw   = $file;                       # exactly as it was passed in
-    my $canon = abs_path($file) // $file;    # resolved symlinks, etc.
-
-    my $file_uid  = (stat $raw)[4] // undef;
-    my $file_home = defined $file_uid ? ( getpwuid($file_uid) )[7] : undef;
-
-    PATTERN:
-    for my $pat (@$patterns) {
-        my $p = $pat;
-
-        # 1) handle ~ or ~user prefixes
-        if ( $p =~ m{ ^~([^/]*)/?(.*) }x ) {
-            my ( $user, $rest ) = ( $1, $2 // '' );
-            my $home = $user eq ''
-              ? $file_home
-              : ( getpwnam($user) )[7];
-            next PATTERN unless defined $home && length $home;
-            $p = $home . '/' . $rest;
-        }
-
-        # 2) build a canonical counterpart of literal patterns
-        my $p_canon = $p;
-        $p_canon = abs_path($p) // $p     if $p !~ / [*?\[] /x;
-
-        # 3) succeed if **either** raw-vs-raw  **or** canon-vs-canon matches
-        return 1
-          if fnmatch( $p,       $raw,   FNM_PATHNAME | FNM_PERIOD )
-          || fnmatch( $p_canon, $canon, FNM_PATHNAME | FNM_PERIOD );
-    }
-    return 0;
-}
-
-sub _old__cfg_match {
-    my ($patterns, $file) = @_;
-    my $file_uid  = (stat $file)[4] // undef;
-    my $file_home = defined $file_uid ? (getpwuid($file_uid))[7] : undef;
-    for my $pat (@$patterns) {
-        my $p = $pat;
-        if ($p =~ m{^~([^/]*)/?(.*)}) {
-            my ($user, $rest) = ($1, $2 // '');
-            my $home;
-            if ($user eq '') { $home = $file_home; }
-            else { $home = (getpwnam($user))[7]; }
-            next unless defined $home && length $home;
-            $p = $home . '/' . $rest;
-        }
-        return 1 if fnmatch($p, $file, FNM_PATHNAME | FNM_PERIOD);
-    }
-    return 0;
-}
 sub _pack_spec_bits   { my $bits = 0; $bits |= 1 << $CODE_TO_BIT{$_} for @{$_[0]}; $bits }
 sub _unpack_spec_bits {
     my ($bits) = @_;
     return [ sort map { $BIT_TO_CODE[$_] } grep { $bits & (1 << $_) } 0 .. $#BIT_TO_CODE ];
 }
+
 sub _compact_meta {
     my ($m) = @_;
     my %c = (
         v => 1,
         s => _pack_spec_bits($m->{spec}),
-        p => join("\0", @{ $m->{patterns} // [] }),
+        p => join(PATH_SEP, @{ $m->{patterns} // [] }),
         t => $m->{tag},
     );
     $c{u} = join(',', @{ $m->{uid} }) if $m->{uid};
     $c{g} = join(',', @{ $m->{gid} }) if $m->{gid};
     $c{w} = 1                         if $m->{walk_back};
+    $c{h} = $m->{hash}                if exists $m->{hash}; # PID hash
     if (my $pp = $m->{ppid}) {
         $c{P} = $pp->{path};
         $c{S} = _pack_spec_bits($pp->{spec});
@@ -373,6 +229,7 @@ sub _compact_meta {
     }
     \%c
 }
+
 sub _expand_meta {
     my ($c) = @_;
     my %m = (
@@ -384,6 +241,7 @@ sub _expand_meta {
     $m{uid}       = [ split /,/, $c->{u} ] if exists $c->{u};
     $m{gid}       = [ split /,/, $c->{g} ] if exists $c->{g};
     $m{walk_back} = 1                      if exists $c->{w};
+    $m{hash}      = $c->{h}                if exists $c->{h}; # PID hash
     if (exists $c->{P}) {
         $m{ppid} = {
             path => $c->{P},
@@ -393,6 +251,7 @@ sub _expand_meta {
     }
     \%m
 }
+
 sub _store_team_attr_compact {
     my ($file, $key, $meta) = @_;
     store_team_attr($file, $key, _compact_meta($meta));
@@ -403,9 +262,21 @@ sub _load_team_attr_compact {
     _expand_meta($c);
 }
 
+# ─── NEW: refresh PID file hash in meta ──────────────
+sub _vt_refresh_pid_hash {
+    my ($exe_path, $meta) = @_;
+    return unless $exe_path;
+    my $dec = decode_codes_to_cfg( $meta->{spec} );
+    if (-r $exe_path) {
+        $meta->{hash} = file_hash( $exe_path, $dec );
+    } else {
+        $meta->{hash} = '';
+    }
+}
+
 # ╭───────────────────────── ENTRY POINT WRAPPER ─────────────────────────╮
 sub _en_main {
-    my $register = 0;
+    my $register = 0;  # set to 1 to write xattrs
     my $verify   = 1;
 
     my ($master, $err) = init_master(MASTER_PATH, MASTER_SIZE);
@@ -446,6 +317,127 @@ sub _vt_refresh_ppid_hash {
     } else {
         $pp->{hash} = '';
     }
+}
+
+sub _rt_build_meta {
+    my ($team, $def, $exe_id) = @_;
+    my ($exe_path, $exe_dec) = _lookup_file($exe_id);
+
+    my $pp_meta   = _rt_build_ppid_block($def->{ppid});
+    my @patterns  = map { _canon_cfg_pattern($_) } @{ $def->{configs} // [] };
+    @patterns     = sort @patterns;
+
+    my %meta = (
+        v        => 1,
+        spec     => encode_cfg_to_codes($exe_dec),
+        patterns => \@patterns,
+        hash     => file_hash($exe_path, $exe_dec),    # PID hash
+    );
+    $meta{ppid}      = $pp_meta          if $pp_meta;
+    $meta{uid}       = $def->{uid}       if $def->{uid};
+    $meta{gid}       = $def->{gid}       if $def->{gid};
+    $meta{walk_back} = $def->{walk_back} if exists $def->{walk_back};
+    return \%meta;
+}
+
+sub _rt_build_ppid_block {
+    my ($pp_id) = @_;
+    return unless $pp_id;
+
+    my ($pp_path, $pp_dec) = _lookup_file($pp_id) or return;
+    return unless -r $pp_path;
+
+    return {
+        path => $pp_path,
+        spec => encode_cfg_to_codes($pp_dec),
+        hash => file_hash($pp_path, $pp_dec),
+    };
+}
+
+sub _rt_register {
+    my ($team, $def, $master) = @_;
+    my $exe_id = $def->{pid} or return;
+
+    my ($exe_path) = _lookup_file($exe_id)
+        or return _rt_log_unreadable($team, $exe_id);
+
+    return _rt_log_unreadable($team, $exe_path) unless -r $exe_path;
+
+    my $meta = _rt_build_meta($team, $def, $exe_id);
+    $meta->{tag} = _rt_generate_tag($team, $meta, $master);
+
+    _store_team_attr_compact($exe_path, _attr(XATTR_TEAM, $team), $meta)
+        or D "[register:$team] failed store_team_attr";
+    D "[register:$team] OK";
+    return 1;
+}
+
+sub _vt_verify {
+    my ($team, $master) = @_;
+    my ($exe_path) = _lookup_file($TEAMS{$team}{pid})
+        or do { D "[verify:$team] unknown executable"; return };
+
+    my $meta = _load_team_attr_compact($exe_path, _attr(XATTR_TEAM, $team))
+        or do { D "[verify:$team] missing team attr"; return };
+    my $tag  = delete $meta->{tag};
+
+    my $Ki  = hmac('BLAKE2b_256', $master, "TEAM-$team");
+    my $crc = g_checksum::checksum_data_v2($meta);
+    my $cmp = hmac('BLAKE2b_256', $Ki, TAG_PREFIX . $crc);
+
+    unless (bcmp($cmp, $tag)) {
+        D "[verify:$team] tag mismatch";
+        return;
+    }
+
+    _vt_refresh_ppid_hash($meta->{ppid}) if $meta->{ppid};
+    _vt_refresh_pid_hash($exe_path, $meta);
+
+    my $crc2 = g_checksum::checksum_data_v2($meta);
+    my $cmp2 = hmac('BLAKE2b_256', $Ki, TAG_PREFIX . $crc2);
+
+    unless (bcmp($cmp2, $tag)) {
+        D "[verify:$team] tag mismatch (after refresh)";
+        return;
+    }
+    D "[verify:$team] OK";
+    return 1;
+}
+
+sub _vx_verify_exe_config {
+    my ($exe_id, $cfg, $only_team) = @_;
+
+    my ($exe_path) = _lookup_file($exe_id)   or return;
+    return unless -r $exe_path && -r $cfg;
+    my $abs_cfg = abs_path($cfg)             // return;
+
+    my $master = read_write::read(MASTER_PATH);
+    return unless defined $master && length($master) == MASTER_SIZE;
+
+    TEAM:
+    for my $team ( list_teams($exe_path) ) {
+        next TEAM if defined $only_team && $team ne $only_team;
+
+        my $meta = _load_team_attr_compact(
+                     $exe_path, _attr(XATTR_TEAM, $team)
+                   ) or next TEAM;
+
+        my $tag  = delete $meta->{tag};
+        my $Ki   = hmac('BLAKE2b_256', $master, "TEAM-$team");
+        my $crc  = g_checksum::checksum_data_v2($meta);
+        my $cmp  = hmac('BLAKE2b_256', $Ki, TAG_PREFIX . $crc);
+        next TEAM unless secure_bcmp($cmp, $tag);
+
+        _vt_refresh_ppid_hash($meta->{ppid}) if $meta->{ppid};
+        _vt_refresh_pid_hash($exe_path, $meta);
+
+        my $crc2 = g_checksum::checksum_data_v2($meta);
+        my $cmp2 = hmac('BLAKE2b_256', $Ki, TAG_PREFIX . $crc2);
+        next TEAM unless secure_bcmp($cmp2, $tag);
+
+        return 1 if _cfg_match($meta->{patterns}, $abs_cfg);
+    }
+    return;
 }
 
 # ╭──────────────────── LINKAGE VERIFICATION MATRIX  ─────────╮
@@ -492,12 +484,23 @@ sub _vl_ppid_columns {
     return ($path, $name);
 }
 sub _vl_row {
-    my ($team,$exe,$pid_spec,$pp_path,$pp_spec,$uid_list,$gid_list,$walk,$spec,$cfg)=@_;
+    my (
+        $team,$exe,$pid_spec,$pp_path,$pp_spec,
+        $uid_list,$gid_list,$walk,$spec,$cfg
+    ) = @_;
+
     my $exists   = -e $cfg ? 'yes' : 'no';
     my $readable = -r $cfg ? 'yes' : 'no';
     my $perms    = sprintf "%04o", ((stat($cfg))[2] // 0) & 07777;
-    my $result   = ($exists eq 'yes' && $readable eq 'yes' && _vx_verify_exe_config($exe, $cfg))
-                 ? '✓' : '✗';
+
+    my $ok = (
+        $exists  eq 'yes'
+        && $readable eq 'yes'
+        && _vx_verify_exe_config($exe, $cfg, $team)
+    );
+
+    my $result = $ok ? '✓' : '✗';
+
     return [
         $team,           # Team
         $exe,            # PID
@@ -527,202 +530,6 @@ sub _vl_calc_widths {
     return @w;
 }
 sub _vl_sum { my $s = 0; $s += $_ for @_; return $s }
-
-# ╭──────────────────── MASTER KEY & CRYPTO HELPERS (unchanged) ──────────╮
-sub init_master {
-    my ($path,$size)=@_;
-    unless(-e $path){
-        read_write::write($path, random_bytes($size)) or die "create $path: $!";
-        chmod 0400, $path or die "chmod $path: $!";
-        say "Generated new master key at $path";
-    }
-    my $m=read_write::read($path);
-    die "Master wrong length" unless defined $m && length($m)==$size;
-    $m;
-}
-
-sub bcmp {
-    my ($a, $b) = @_;
-    return unless defined $a && defined $b && length($a)==length($b);
-    return unless $a eq $b;
-    return 1;
-}
-
-sub secure_bcmp {
-    my ($a, $b) = @_;
-
-    return unless defined $a && defined $b && length($a)==length($b);
-
-    my $d = 0;
-    $d |= ord(substr($a, $_, 1)) ^ ord(substr($b, $_, 1)) for 0 .. length($a) - 1;
-
-    return $d ? undef : 1;
-}
-
-# ─── NEW HELPERS ──────────────────────────────────────────────────────────
-sub _spec_to_dec {
-    # Convert whatever the caller gave (HASH, CODEREF, constant name, undef)
-    # into a *normalised* integrity-config HASH.
-    my ($spec) = @_;
-    my $dec;
-    if   (!defined $spec)          { $dec = FORENSIC_FREEZE() }
-    elsif (ref $spec eq 'HASH')    { $dec = $spec }
-    elsif (ref $spec eq 'CODE')    { $dec = $spec->() }
-    elsif (!ref $spec) {                           # constant / sub name
-        no strict 'refs';
-        die "Unknown integrity spec '$spec'" unless defined &{$spec};
-        $dec = &{$spec}();
-    }
-    else { die "Unsupported integrity-spec type" }
-    return normalize_integrity_cfg($dec);
-}
-
-sub _lookup_file {
-    my ($name) = @_;
-
-    # 1) direct lookup by key (label, '/' path, or literal '~' path)
-    if (exists $FILES{$name}) {
-        my $val = $FILES{$name};
-        if (ref $val eq 'ARRAY') {
-            my ($p, $s) = @$val;
-            return ($p, _spec_to_dec($s));
-        }
-        return ($name, _spec_to_dec($val));
-    }
-
-    # 2) tilde-expansion lookup: if the caller passed "~/..." or "~user/..."
-    if ($name =~ /^~[A-Za-z0-9_-]*\//) {
-        my $expanded = glob($name);
-        if ($expanded) {
-            # 2a) see if the expanded path is itself a FILES key
-            if (exists $FILES{$expanded}) {
-                my $v = $FILES{$expanded};
-                return ($expanded, _spec_to_dec(ref $v eq 'ARRAY' ? $v->[1] : $v));
-            }
-            # 2b) fall-through to treat it as a literal path below:
-            $name = $expanded;
-        }
-    }
-
-    # 3) reverse-lookup for array-style entries if they stored this path
-    if ($name =~ m{^/}) {
-        for my $val (values %FILES) {
-            next unless ref $val eq 'ARRAY';
-            my ($p, $s) = @$val;
-            return ($p, _spec_to_dec($s)) if $p eq $name;
-        }
-    }
-
-    # not found
-    return;
-}
-
-# ─── MODIFIED CORE ROUTINES ──────────────────────────────────────────────
-sub choose_cfg {
-    my ($id) = @_;
-    my (undef, $dec) = _lookup_file($id);
-    return $dec // FORENSIC_FREEZE();
-}
-
-sub _rt_register {
-    my ($team, $def, $master) = @_;
-    my $exe_id = $def->{pid} or return;
-
-    my ($exe_path) = _lookup_file($exe_id)
-        or return _rt_log_unreadable($team, $exe_id);
-
-    return _rt_log_unreadable($team, $exe_path) unless -r $exe_path;
-
-    my $meta = _rt_build_meta($team, $def, $exe_id);
-    $meta->{tag} = _rt_generate_tag($team, $meta, $master);
-
-    _store_team_attr_compact($exe_path, _attr(XATTR_TEAM, $team), $meta)
-        or D "[register:$team] failed store_team_attr";
-    D "[register:$team] OK";
-    return 1;
-}
-
-sub _rt_build_meta {
-    my ($team, $def, $exe_id) = @_;
-    my (undef, $exe_dec) = _lookup_file($exe_id);
-
-    my $pp_meta   = _rt_build_ppid_block($def->{ppid});
-    my @patterns  = map { _canon_cfg_pattern($_) } @{ $def->{configs} // [] };
-    @patterns     = sort @patterns;
-
-    my %meta = (
-        v        => 1,
-        spec     => encode_cfg_to_codes($exe_dec),
-        patterns => \@patterns,
-    );
-    $meta{ppid}      = $pp_meta          if $pp_meta;
-    $meta{uid}       = $def->{uid}       if $def->{uid};
-    $meta{gid}       = $def->{gid}       if $def->{gid};
-    $meta{walk_back} = $def->{walk_back} if exists $def->{walk_back};
-    return \%meta;
-}
-
-sub _rt_build_ppid_block {
-    my ($pp_id) = @_;
-    return unless $pp_id;
-
-    my ($pp_path, $pp_dec) = _lookup_file($pp_id) or return;
-    return unless -r $pp_path;
-
-    return {
-        path => $pp_path,
-        spec => encode_cfg_to_codes($pp_dec),
-        hash => file_hash($pp_path, $pp_dec),
-    };
-}
-
-sub _vt_verify {
-    my ($team, $master) = @_;
-    my ($exe_path) = _lookup_file($TEAMS{$team}{pid})
-        or do { D "[verify:$team] unknown executable"; return };
-
-    my $meta = _load_team_attr_compact($exe_path, _attr(XATTR_TEAM, $team))
-        or do { D "[verify:$team] missing team attr"; return };
-    my $tag  = delete $meta->{tag};
-
-    _vt_refresh_ppid_hash($meta->{ppid}) if $meta->{ppid};
-
-    my $Ki  = hmac('BLAKE2b_256', $master, "TEAM-$team");
-    my $crc = g_checksum::checksum_data_v2($meta);
-    my $cmp = hmac('BLAKE2b_256', $Ki, TAG_PREFIX . $crc);
-
-    unless (bcmp($cmp, $tag)) {
-        D "[verify:$team] tag mismatch";
-        return;
-    }
-    D "[verify:$team] OK";
-    return 1;
-}
-
-sub _old_dlete__vx_verify_exe_config {
-    my ($exe_id, $cfg) = @_;
-    my ($exe_path) = _lookup_file($exe_id) or return;
-    return unless -r $exe_path && -r $cfg;
-
-    my $abs_cfg = abs_path($cfg) or return;
-    my $master  = read_write::read(MASTER_PATH);
-    return unless defined $master && length($master) == MASTER_SIZE;
-
-    for my $team (list_teams($exe_path)) {
-        my $meta = _load_team_attr_compact($exe_path, _attr(XATTR_TEAM, $team)) or next;
-        next unless _cfg_match($meta->{patterns}, $abs_cfg);
-        my $tag = delete $meta->{tag};
-        _vt_refresh_ppid_hash($meta->{ppid}) if $meta->{ppid};
-        my $cmp = hmac(
-            'BLAKE2b_256',
-            hmac('BLAKE2b_256', $master, "TEAM-$team"),
-            TAG_PREFIX . g_checksum::checksum_data_v2($meta)
-        );
-        return 1 if $cmp eq $tag;
-    }
-    return;
-}
-
 sub _vl_gather_rows {
     my @rows;
     my $spec_map = _vl_build_spec_name_map();
@@ -750,6 +557,81 @@ sub _vl_gather_rows {
         }
     }
     return @rows;
+}
+
+# ─── OTHER CORE ──────────────────────────────────────────────────────────
+sub _spec_to_dec {
+    my ($spec) = @_;
+    my $dec;
+    if   (!defined $spec)          { $dec = FORENSIC_FREEZE() }
+    elsif (ref $spec eq 'HASH')    { $dec = $spec }
+    elsif (ref $spec eq 'CODE')    { $dec = $spec->() }
+    elsif (!ref $spec) {
+        no strict 'refs';
+        die "Unknown integrity spec '$spec'" unless defined &{$spec};
+        $dec = &{$spec}();
+    }
+    else { die "Unsupported integrity-spec type" }
+    return normalize_integrity_cfg($dec);
+}
+sub _lookup_file {
+    my ($name) = @_;
+
+    if (exists $FILES{$name}) {
+        my $val = $FILES{$name};
+        if (ref $val eq 'ARRAY') {
+            my ($p, $s) = @$val;
+            return ($p, _spec_to_dec($s));
+        }
+        return ($name, _spec_to_dec($val));
+    }
+    if ($name =~ /^~[A-Za-z0-9_-]*\//) {
+        my $expanded = glob($name);
+        if ($expanded) {
+            if (exists $FILES{$expanded}) {
+                my $v = $FILES{$expanded};
+                return ($expanded, _spec_to_dec(ref $v eq 'ARRAY' ? $v->[1] : $v));
+            }
+            $name = $expanded;
+        }
+    }
+    if ($name =~ m{^/}) {
+        for my $val (values %FILES) {
+            next unless ref $val eq 'ARRAY';
+            my ($p, $s) = @$val;
+            return ($p, _spec_to_dec($s)) if $p eq $name;
+        }
+    }
+    return;
+}
+sub choose_cfg {
+    my ($id) = @_;
+    my (undef, $dec) = _lookup_file($id);
+    return $dec // FORENSIC_FREEZE();
+}
+sub init_master {
+    my ($path,$size)=@_;
+    unless(-e $path){
+        read_write::write($path, random_bytes($size)) or die "create $path: $!";
+        chmod 0400, $path or die "chmod $path: $!";
+        say "Generated new master key at $path";
+    }
+    my $m=read_write::read($path);
+    die "Master wrong length" unless defined $m && length($m)==$size;
+    $m;
+}
+sub bcmp {
+    my ($a, $b) = @_;
+    return unless defined $a && defined $b && length($a)==length($b);
+    return unless $a eq $b;
+    return 1;
+}
+sub secure_bcmp {
+    my ($a, $b) = @_;
+    return unless defined $a && defined $b && length($a)==length($b);
+    my $d = 0;
+    $d |= ord(substr($a, $_, 1)) ^ ord(substr($b, $_, 1)) for 0 .. length($a) - 1;
+    return $d ? undef : 1;
 }
 
 # ================== END ==================

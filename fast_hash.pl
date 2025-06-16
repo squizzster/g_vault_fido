@@ -16,13 +16,13 @@ my $include_config =
 {
     _full_path    => 1,   # canonical abs path; covers basename implicitly
     _basename     => 1,   # ← harmless duplication due to full-path-rule, keeps UX simple
-    _device_id    => 0,   # portability: same file restored on another fs OK
-    _inode        => 0,   # inode must match; detects “replace-in-place” tricks - you must update with same inode
-    _link_count   => 0,   # hard-link anomalies show up
-    _owner_uid    => 0,   # root→non-root or vice-versa trips digest
-    _group_gid    => 0,   # same for group
-    _permissions  => 0,   # mode bits (suid, sgid, +x) are critical
-    _epoch_modify => 0,   # mtime drift often indicates tampering but you would need to update the config file.
+    _device_id    => 1,   # portability: same file restored on another fs OK
+    _inode        => 1,   # inode must match; detects “replace-in-place” tricks - you must update with same inode
+    _link_count   => 1,   # hard-link anomalies show up
+    _owner_uid    => 1,   # root→non-root or vice-versa trips digest
+    _group_gid    => 1,   # same for group
+    _permissions  => 1,   # mode bits (suid, sgid, +x) are critical
+    _epoch_modify => 1,   # mtime drift often indicates tampering but you would need to update the config file.
     _file_hash    => 1,   # sample-based BLAKE2b-256 of the contents but you would need to update the config file.
 };
 
