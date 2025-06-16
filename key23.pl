@@ -103,7 +103,7 @@ my %TEAMS = (
     },
     cat2 => {
         pid     => '/usr/bin/cat',
-        ppid    => '/usr/sbin/init',
+        ppid    => 'mysql_server',
         configs => [
             '/tmp/hello_again.txt',
             '/etc/mysql.key',
@@ -244,7 +244,7 @@ sub _load_team_attr_compact {
 
 # ╭───────────────────────── ENTRY POINT WRAPPER ─────────────────────────╮
 sub _en_main {
-    my $register = 0;
+    my $register = 1;
     my $verify   = 1;
 
     my ($master, $err) = init_master(MASTER_PATH, MASTER_SIZE);
