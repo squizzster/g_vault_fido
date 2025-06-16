@@ -266,6 +266,7 @@ sub __fifo_fa_promote {                                  # ≤ 50 loc
 
     if (my $rec=_rec($g,$ino)){ $rec->{path}=$file_path }
     else { carp "CRITICAL: Missing record for inode $ino after rename" }
+    print STDERR "[WATCHING] => [$file_path].\n";
     return 1;
 }
 
