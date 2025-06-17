@@ -48,12 +48,13 @@ use feature 'say';
 
 use lib 'lib';
 
-use gv_c ();    # create
-use gv_s ();    # save
-use gv_l ();    # load
-use gv_e ();    # encrypt
-use gv_d ();    # decrypt
-use gv_m ();    # decrypt
+use gv_c       ();    # create
+use gv_s       ();    # save
+use gv_l       ();    # load
+use gv_e       ();    # encrypt
+use gv_d       ();    # decrypt
+use gv_m       ();    # decrypt
+use gv_random  ();    # crypto-graphic random bytes
 
 my $ring_name = 'memory';
 my $file      = '/tmp/g_vault_master_secrets_memory_6._gvr_';

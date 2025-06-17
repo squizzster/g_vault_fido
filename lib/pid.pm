@@ -92,83 +92,36 @@ sub ancestor {
     return $pid;
 }
 
+
 sub pid_info {
     my ($pid) = @_;
-    return unless looks_like_number($pid) && -d "/proc/$pid";
+    return unless defined $pid && $pid =~ /\A[1-9]\d*\z/;
 
     my $stat = slurp_file("/proc/$pid/stat") or return;
-    my @parts = grep { defined } ($stat =~ /\(([^)]*)\)|([^\s]+)/g);
 
-    my %info = (
-      pid    => $pid,
-      tcomm  => $parts[1],
-      ppid   => $parts[3],
-      pppid  => ancestor($pid, 2),
-      ppppid => ancestor($pid, 3),
-      start  => $parts[21],
-      uid    => (split /\s+/, (read_status_field($pid,'Uid') // ''))[0],
-      gid    => (split /\s+/, (read_status_field($pid,'Gid') // ''))[0],
-      exe    => readlink "/proc/$pid/exe",
-      cwd    => readlink "/proc/$pid/cwd",
-    );
-    return \%info;
+    my ($stat_pid, $comm, $rest) = $stat =~ /^(\d+)\s+\((.*?)\)\s+(.*)$/s
+        or return;
+    my @f = split ' ', $rest;
+    return unless @f >= 22;               # kernel sanity
+
+    my ($uid_line) = read_status_field($pid, 'Uid') // '';
+    my ($gid_line) = read_status_field($pid, 'Gid') // '';
+    my ($uid) = split /\s+/, $uid_line // ();
+    my ($gid) = split /\s+/, $gid_line // ();
+
+    return {
+        pid     => $stat_pid,
+        tcomm   => $comm,
+        ppid    => $f[1],
+        pppid   => ancestor($pid, 2),
+        ppppid  => ancestor($pid, 3),
+        start   => $f[19],
+        uid     => $uid,
+        gid     => $gid,
+        exe     => readlink("/proc/$pid/exe"),
+        cwd     => readlink("/proc/$pid/cwd"),
+    };
 }
-
-
-
-# -------------------------------------------------------------------
-#  pid_info( $pid ) ⇒ HASHREF | undef
-# -------------------------------------------------------------------
-#sub pid_info {
-#    my ($pid) = @_;
-#    return unless looks_like_number($pid) && -d "/proc/$pid";
-#
-#    my $stat = slurp_file("/proc/$pid/stat") or return;
-#    my @parts = ( $stat =~ /\(([^)]*)\)|([^\s]+)/g );
-#    @parts = grep { defined } @parts;
-#
-#    my $ppid = $parts[3];  # parent's PID
-#    my $pppid = do {
-#        # read the PPid: line from the parent's /proc/<ppid>/status
-#        my $raw = read_status_field($ppid, 'PPid') // '';
-#        (split /\s+/, $raw)[0]     # grab the first number
-#    };
-#
-#    my %info = (
-#        pid   => $pid,
-#        tcomm => $parts[1],
-#        ppid  => $ppid,
-#        pppid => $pppid || undef,   # undef if the parent has vanished
-#        start => $parts[21],
-#        uid   => (split /\s+/, (read_status_field($pid,'Uid') // ''))[0],
-#        gid   => (split /\s+/, (read_status_field($pid,'Gid') // ''))[0],
-#        exe   => readlink "/proc/$pid/exe",
-#        cwd   => readlink "/proc/$pid/cwd",
-#    );
-#    return \%info;
-#}
-
-#sub _old_pid_info {
-#    my ($pid) = @_;
-#    return unless looks_like_number($pid) && -d "/proc/$pid";
-#
-#    my $stat = slurp_file("/proc/$pid/stat") or return;
-#    my @parts = ( $stat =~ /\(([^)]*)\)|([^\s]+)/g );
-#    @parts    = grep { defined } @parts;
-#
-#    my %info = (
-#        pid   => $pid,
-#        tcomm => $parts[1],
-#        ppid  => $parts[3],
-#        pppid => ??
-#        start => $parts[21],
-#        uid   => (split /\s+/, (read_status_field($pid,'Uid') // ''))[0],
-#        gid   => (split /\s+/, (read_status_field($pid,'Gid') // ''))[0],
-#        exe   => readlink "/proc/$pid/exe",
-#        cwd   => readlink "/proc/$pid/cwd",
-#    );
-#    return \%info;
-#}
 
 # -------------------------------------------------------------------
 #  open_files_of( $pid ) ⇒ ARRAYREF | undef

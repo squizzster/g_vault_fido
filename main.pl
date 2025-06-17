@@ -34,12 +34,22 @@ ev_signal::start ( $g );
 
 Fifo::fifo_add   ( $g, '/tmp/test.fifo'           ) or die "Failed to start FIFO watcher. \n";
 Fifo::fifo_add   ( $g, '/etc/my.cnf.d/client.cnf' ) or die "Failed to start FIFO watcher. \n";
+Fifo::fifo_add   ( $g, 'hello'                    ) or die "Failed to start FIFO watcher. \n";
 
+ev_socket::add   ( $g, 
+                        path     => '/tmp/woofwoof.sock',
+                        mode     => 0644,
+                        backlog  => 20,
+                        abstract => 1,
+                 );
+
+print "\n[START] [$$].\n";
 AnyEvent->condvar->recv;
 
 END {
-    # Cleanup code here, THIS DOES NOT GET CALLED, we need to install a SIGNAL.
+    # Cleanup code here,
+    ev_signal::stop($g); ## example of good clean-up! (start / stop);
     print "Cleaning up before exit...\n";
     print ( dump $g);
-    print "\nExit.\n";
+    print "\nClean exit. (well it will be at some point).\n";
 }

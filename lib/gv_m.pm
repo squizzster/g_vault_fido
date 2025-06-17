@@ -4,7 +4,6 @@ use strict;
 use warnings;
 
 use Crypt::Digest::BLAKE2b_256 qw(blake2b_256);
-use Crypt::PRNG qw(random_bytes);
 #use gv_l ();              # ring loader / cache
 #use gv_e ();              # provides _recover_for_mac and _derive_for_mac
 
@@ -44,7 +43,7 @@ sub sign {
         or return (undef, ERR_RING_NOT_AVAILABLE);
 
     # fresh salt per message
-    my $salt = random_bytes(DYNAMIC_SALT_LEN);
+    my $salt = gv_random::get_bytes(DYNAMIC_SALT_LEN);
 
     # derive master-secret and AEAD key
     my ($sm, $er) = gv_e::_recover_for_mac($ring, $salt, $pep);

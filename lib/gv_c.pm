@@ -4,7 +4,6 @@ use strict;
 use warnings;
 
 use Carp           qw(croak);
-use Crypt::PRNG    qw(random_bytes);
 use Crypt::Digest::BLAKE2b_256 qw(blake2b_256 blake2b_256_hex);
 
 use constant {
@@ -34,12 +33,12 @@ sub build_cipher_ring {
 
     my $master = defined $master_input
         ? $master_input
-        : random_bytes(MASTER_SECRET_LEN);
+        : gv_random::get_bytes(MASTER_SECRET_LEN);
     return (undef, 'Master secret wrong length')
         unless length($master) == MASTER_SECRET_LEN;
 
     my $name_hash_hex = Crypt::Digest::BLAKE2b_256::blake2b_256_hex($name . BLAKE_NAME_TAG);
-    my $mac_key       = random_bytes(MAC_KEY_LEN);
+    my $mac_key       = gv_random::get_bytes(MAC_KEY_LEN);
 
     my @bytes = unpack 'C*', $master;
     my (@closures,@next_ref);

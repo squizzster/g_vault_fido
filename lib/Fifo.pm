@@ -25,6 +25,7 @@ use Try::Tiny;
 use Log::Any      qw($log);
 use File::Temp    0.23 ();
 use Data::Dump    qw(dump);
+use Cwd ();
 
 # ------------------------------------------------------------------ #
 # Globals (AI_GOOD – structure preserved verbatim)                   #
@@ -35,9 +36,17 @@ $SIG{PIPE} = 'IGNORE';                     # AI_GOOD – required safety
 sub info  { $log->info("Fifo: @_") }
 sub error { $log->error("Fifo: @_"); return }
 
+# ------------------------------------------------------------------ #
+# ===== New helper: canonical "dev:ino" composite key ============== #
+# ------------------------------------------------------------------ #
+sub __fifo_key {
+    my ($dev, $ino) = @_;
+    return defined $dev && defined $ino ? "$dev:$ino" : undef;
+}
+
 # Book-keeping accessors
-sub _rec        { my ($g,$ino)=@_;    return $g->{monitor}{$ino} }
-sub _rec_exists { my ($g,$ino)=@_;    exists $g->{monitor}{$ino} }
+sub _rec        { my ($g, $key) = @_;    return $g->{monitor}{$key} }
+sub _rec_exists { my ($g, $key) = @_;    exists $g->{monitor}{$key} }
 
 # ------------------------------------------------------------------ #
 # Public API – thin wrappers delegating to refactored helpers        #
@@ -57,16 +66,6 @@ sub get_pid_open_files { return pid::pids_holding_file(@_) } # unchanged small
 #         All helpers prefixed with __fifo_ (Law 4 containment)      #
 # ------------------------------------------------------------------ #
 
-###########################
-#  get_inode (≤ 20 loc)   #
-###########################
-sub __fifo_get_inode {                                   # AI_GOOD
-    my ($target) = @_;
-    my @st = ref $target ? stat($target) : stat($target);  # fstat if FH
-    if (@st) { return $st[1] }                             # st_ino
-    carp "stat($target) failed: $!";
-    return;
-}
 
 ############################
 #  inotify_init (≤ 20 loc) #
@@ -119,77 +118,6 @@ sub __fifo_iwf_build_watch {                              # ≤ 40 loc
     return $watcher;
 }
 
-sub __fifo_iwf_register {                                 # ≤ 30 loc
-    my ($g,$ino,$file,$type,$watcher,$cb) = @_;
-    $g->{monitor}{$ino} = {
-        type            => $type,
-        path            => $file,
-        watcher         => $watcher,
-        system_event_cb => ($type eq 'system' ? $cb : undef),
-    };
-    return 1;
-}
-
-##########################
-#  inotify_watch_file – robust retry loop (final)
-##########################
-sub __fifo_iwf_retry_loop {                                 # AI_ROBUST
-    my ($g, $file, $type, $cb) = @_;
-
-    require Errno;                                         # symbolic %!
-    if ( my $e = __fifo_iwf_validate($file,$type,$cb) ) {  # early check
-        return error $e;
-    }
-
-    my $mask = $type eq 'fifo'
-             ? IN_OPEN | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF
-             : IN_CLOSE_WRITE;
-
-    my $attempt      = 0;
-    my $max_attempts = 5;                                  # bounded retries
-  RETRY: {
-        ++$attempt;
-        my $ino_before = __fifo_get_inode($file)
-            or return error "stat($file) failed before watch";
-
-        # Already watched?  Return the existing success.
-        if ( _rec_exists($g, $ino_before) ) {
-            my $r = _rec($g, $ino_before);
-            return 1 if $r->{path} eq $file;               # idempotent
-            return error "inode [$ino_before] already watched via $r->{path}";
-        }
-
-        # We will *re-check* after the watch is installed.
-        my ($stable_ino, $watcher);
-        $watcher = __fifo_iwf_build_watch($g,$file,$mask,\$cb,\$stable_ino);
-
-        # ---------- NEW: tolerate only “vanished” races ----------
-        unless ($watcher) {
-            if ( ($!{ENOENT} || $!{ENOTDIR}) && $attempt < $max_attempts ) {
-                sleep 0.05;                                # back-off
-                goto RETRY;
-            }
-            return;                                        # error already logged
-        }
-        # ---------------------------------------------------------
-
-        my $ino_after = __fifo_get_inode($file)
-            or do { $watcher->cancel; return error "stat($file) failed after watch" };
-
-        # --------------- NEW: still the *same* file? ---------------
-        if ($ino_after != $ino_before) {
-            # If the file changed during our retry cycle, start fresh.
-            $watcher->cancel;
-            goto RETRY if $attempt < $max_attempts;
-            return error "File at [$file] kept changing – could not obtain stable inode";
-        }
-        # -----------------------------------------------------------
-
-        $stable_ino = $ino_after;                           # captured for cb
-        __fifo_iwf_register($g,$stable_ino,$file,$type,$watcher,$cb);
-    }
-    return 1;
-}
 
 
 ##########################
@@ -202,15 +130,16 @@ sub __fifo_fifo_add {                                    # AI_GOOD
 
 # ------- helpers for fifo_add --------#
 
-sub __fifo_fa_tmpfifo {                                  # ≤ 25 loc
+sub __fifo_fa_tmpfifo { 
     my ($path) = @_;
-    my $dir  = dirname($path);
-    my $base = basename($path);
-    my $tmpl = ".$base.XXXXXX";
-    return File::Temp::tempnam($dir,$tmpl);
+       # 112 bits of entropy is enuff.
+    my $tmp_file = ( gv_dir::dir_name($path) . '/' . gv_dir::base_name($path) . '_' .  gv_random::get_b58f(14) . gv_dir::file_extension($path) );
+    return if not defined $tmp_file;
+    return if substr($tmp_file,0,1) ne '/';
+    return $tmp_file;
 }
 
-sub __fifo_fa_open_handle {                              # ≤ 40 loc
+sub __fifo_fa_open_handle {  
     my ($tmp) = @_;
     require Fcntl;
     my $O_CLOEXEC = defined(&Fcntl::O_CLOEXEC) ? Fcntl::O_CLOEXEC() : 0;
@@ -233,60 +162,160 @@ sub __fifo_fa_watch {                                    # ≤ 25 loc
     return __fifo_inotify_watch_file($g,$tmp,'fifo');
 }
 
-sub __fifo_fa_promote {                                  # ≤ 50 loc
-    my ($g,$file_path) = @_;
+
+# ------------------------------------------------------------------ #
+# get_inode – now list-context aware                                  #
+# ------------------------------------------------------------------ #
+sub __fifo_get_inode {
+    my ($target) = @_;
+    my @st = ref $target ? stat($target) : stat($target);   # fstat if FH
+    if (@st) {
+        # list context → (dev, ino) ; scalar → ino (unchanged)
+        return wantarray ? @st[0,1] : $st[1];
+    }
+    carp "stat($target) failed: $!";
+    return;
+}
+
+# ------------------------------------------------------------------ #
+# inotify_register – store by composite key                          #
+# ------------------------------------------------------------------ #
+sub __fifo_iwf_register {                               # ≤ 30 loc
+    my ($g, $key, $file, $type, $watcher, $cb) = @_;
+    $g->{monitor}{$key} = {
+        dev_ino         => $key,
+        type            => $type,
+        path            => $file,
+        watcher         => $watcher,
+        system_event_cb => ($type eq 'system' ? $cb : undef),
+    };
+    return 1;
+}
+
+# ------------------------------------------------------------------ #
+# inotify_watch_file – retry loop, now dev+ino safe                  #
+# ------------------------------------------------------------------ #
+sub __fifo_iwf_retry_loop {                             # AI_ROBUST
+    my ($g, $file, $type, $cb) = @_;
+
+    require Errno;
+    if ( my $e = __fifo_iwf_validate($file, $type, $cb) ) {
+        return error $e;
+    }
+
+    my $mask = $type eq 'fifo'
+             ? IN_OPEN | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF
+             : IN_CLOSE_WRITE;
+
+    my ($attempt, $max_attempts) = (0, 5);
+
+  RETRY: {
+        ++$attempt;
+
+        my ($dev_before, $ino_before) = __fifo_get_inode($file)
+            or return error "stat($file) failed before watch";
+        my $key_before = __fifo_key($dev_before, $ino_before);
+
+        if ( _rec_exists($g, $key_before) ) {
+            my $r = _rec($g, $key_before);
+            return 1 if $r->{path} eq $file;   # idempotent
+            return error "dev/inode [$key_before] already watched via $r->{path}";
+        }
+
+        my ($stable_key, $watcher);
+        $watcher = __fifo_iwf_build_watch(
+            $g, $file, $mask, \$cb, \$stable_key
+        );
+
+        unless ($watcher) {
+            if ( ($!{ENOENT} || $!{ENOTDIR}) && $attempt < $max_attempts ) {
+                sleep 0.05;
+                goto RETRY;
+            }
+            return;   # error already logged
+        }
+
+        my ($dev_after, $ino_after) = __fifo_get_inode($file)
+            or do { $watcher->cancel; return error "stat($file) failed after watch" };
+
+        if ($dev_after != $dev_before || $ino_after != $ino_before) {
+            $watcher->cancel;
+            goto RETRY if $attempt < $max_attempts;
+            return error "File at [$file] kept changing – could not obtain stable dev/inode";
+        }
+
+        $stable_key = __fifo_key($dev_after, $ino_after);
+        __fifo_iwf_register($g, $stable_key, $file, $type, $watcher, $cb);
+    }
+    return 1;
+}
+
+# ------------------------------------------------------------------ #
+# fifo_rm – key is now dev:ino                                       #
+# ------------------------------------------------------------------ #
+sub __fifo_fifo_rm {                                    # AI_GOOD
+    my ($g, $hint_path, $key) = @_;
+    return unless defined $key;
+
+    my $rec = delete $g->{monitor}{$key} or return;
+
+    if (my $fh = delete $g->{fh}{config}{$key}) {
+        close $fh or carp "close() failed for FIFO key $key: $!";
+    }
+    $rec->{watcher}->cancel if $rec->{watcher};
+
+    my ($dev_curr, $ino_curr) = __fifo_get_inode($rec->{path});
+    my $key_curr = __fifo_key($dev_curr, $ino_curr);
+
+    if (-p $rec->{path} && defined $ino_curr && $key_curr eq $key) {
+        unlink $rec->{path} or carp "unlink($rec->{path}) failed: $!";
+    }
+}
+
+# ------------------------------------------------------------------ #
+# fifo_add/promote – store FH and look-ups by composite key          #
+# ------------------------------------------------------------------ #
+sub __fifo_fa_promote {      
+    my ($g, $file_path) = @_;
+    return error "mkfifo no file_path" if not defined $file_path;
+   
+    $file_path = Cwd::abs_path($file_path);
+    return error "mkfifo bad file_path" unless $file_path;
 
     my $tmp  = __fifo_fa_tmpfifo($file_path);
-    my $mode = 0666 & ~( umask );
+    my $mode = 0666 & ~(umask);
 
-    my $ok = try { _with_root( sub { mkfifo($tmp,$mode) } ) }
+    my $ok = try { _with_root(sub { mkfifo($tmp, $mode) }) }
              catch { return error "mkfifo($tmp) failed: $_" };
     return error "mkfifo returned false" unless $ok;
 
-    my ($fh,$e) = __fifo_fa_open_handle($tmp);
-    if ($e){ unlink $tmp; return error $e }
+    my ($fh, $e) = __fifo_fa_open_handle($tmp);
+    if ($e) { unlink $tmp; return error $e }
 
-    my $ino = __fifo_get_inode($tmp)
+    my ($dev, $ino) = __fifo_get_inode($tmp)
         or (unlink $tmp, return error "stat($tmp) failed after mkfifo");
+    my $key = __fifo_key($dev, $ino);
 
-    $g->{fh}{config}{$ino} = $fh;
+    $g->{fh}{config}{$key} = $fh;
 
-    unless (__fifo_fa_watch($g,$tmp,$ino)){
+    unless (__fifo_fa_watch($g, $tmp, $key)) {
         close $fh;
-        delete $g->{fh}{config}{$ino};
+        delete $g->{fh}{config}{$key};
         unlink $tmp;
         return error "Failed to watch temp FIFO [$tmp]";
     }
 
-    unless (rename $tmp,$file_path){
+    unless (rename $tmp, $file_path) {
         my $err = $!;
-        __fifo_fifo_rm($g,$tmp,$ino);         # AI_GOOD – rollback
+        __fifo_fifo_rm($g, $tmp, $key);
         return error "rename($tmp → $file_path) failed: $err";
     }
 
-    if (my $rec=_rec($g,$ino)){ $rec->{path}=$file_path }
-    else { carp "CRITICAL: Missing record for inode $ino after rename" }
+    if (my $rec = _rec($g, $key)) { $rec->{path} = $file_path }
+    else { carp "CRITICAL: Missing record for dev/inode $key after rename" }
+
     print STDERR "[WATCHING] => [$file_path].\n";
     return 1;
-}
-
-#######################
-#  fifo_rm (small)    #
-#######################
-sub __fifo_fifo_rm {                                    # AI_GOOD
-    my ($g,$hint_path,$ino) = @_;
-    return unless defined $ino;
-    my $rec = delete $g->{monitor}{$ino} or return;
-
-    if (my $fh = delete $g->{fh}{config}{$ino}) {
-        close $fh or carp "close() failed for FIFO inode $ino: $!";
-    }
-    $rec->{watcher}->cancel if $rec->{watcher};
-
-    my $curr = __fifo_get_inode($rec->{path});
-    if (-p $rec->{path} && defined $curr && $curr==$ino) {
-        unlink $rec->{path} or carp "unlink($rec->{path}) failed: $!";
-    }
 }
 
 #####################################

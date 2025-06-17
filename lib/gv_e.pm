@@ -4,7 +4,6 @@ use strict;
 use warnings;
 use Scalar::Util qw(refaddr);
 
-use Crypt::PRNG                      qw(random_bytes);
 use Crypt::AuthEnc::ChaCha20Poly1305 qw(chacha20poly1305_encrypt_authenticate);
 use Crypt::KeyDerivation             qw(hkdf);
 use Crypt::Digest::BLAKE2b_256       qw(blake2b_256 blake2b_256_hex);
@@ -125,7 +124,7 @@ sub encrypt {
     my $ring      = gv_l::get_cached_ring($name_hash)
         or return (undef,ERR_RING_NOT_AVAILABLE);
 
-    my $salt = random_bytes(DYNAMIC_SALT_LEN);
+    my $salt = gv_random::get_bytes(DYNAMIC_SALT_LEN);
     my ($sm,$er1) = $_recover->($ring,$salt,$pep);
     return (undef,ERR_INTERNAL_STATE) if $er1 && $er1 =~ /MAC mismatch|cycle/;
     return (undef,ERR_ENCRYPTION_FAILED) if $er1;
