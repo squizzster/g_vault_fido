@@ -29,13 +29,6 @@ use constant {
 
 };
 
-# helpers
-my $_apply = sub { my ($m,$p,$b)=@_;
-    return ($b ^ $p)                      if $m==0;
-    return (($b<<$p)|($b>>(8-$p))) & 0xFF if $m==1;
-    return ($b + $p) & 0xFF               if $m==2;
-    return (~$b) & 0xFF;
-};
 my $_undo = sub { my ($m,$p,$b)=@_;
     return ($b ^ $p)                      if $m==0;
     return (($b>>$p)|($b<<(8-$p))) & 0xFF if $m==1;

@@ -1,3 +1,5 @@
+package ev_socket;
+
 ########################################################################
 # ev_socket.pm – create a UNIX-domain listener and serve a strict
 #                binary protocol via AnyEvent
@@ -10,8 +12,10 @@
 #                  • LEN == 0  ⇒ terminate sequence, then
 #                  • “STOP”    (4 bytes, literal)
 #                Any deviation → immediate connection drop.
+#                On successful completion, we reply with “OK\n”.
+#
+#      /usr/bin/printf 'STARTECHO\005HELLO\004WOOF\000STOP' | socat 
 ########################################################################
-package ev_socket;
 
 use strict;
 use warnings;
@@ -89,8 +93,18 @@ sub add {
             my $hdl;
             $hdl = AnyEvent::Handle->new(
                 fh       => $client,
-                on_error => sub { $hdl->destroy },
-                on_eof   => sub { $hdl->destroy },
+                on_error => sub { 
+                     my ( $handle, $fatal, $message ) = @_;
+                     _eof_error ($handle, $fatal, $message); 
+                     $hdl->destroy;
+                     return;
+                },
+                on_eof   => sub { 
+                     my ( $handle, $fatal, $message ) = @_;
+                     _eof_error ($handle, $fatal, $message); 
+                     $hdl->destroy;
+                     return; 
+                },
                 rbuf_max => 4096,
                 wbuf_max => 4096,
             );
@@ -121,6 +135,16 @@ sub add {
 # Private helpers for the strict binary protocol
 #######################################################################
 
+# EOF or ERROR 
+sub _eof_error {
+    my ($hdl, $fatal, $reason) = @_;
+    my $src  = $hdl->{socket_path} // '<unknown>';
+    $fatal   = $fatal              // '0';
+    $reason  = $reason             // 'none';
+    warn "[$src] [EOF/ERROR] [$fatal] [$reason].\n";
+}
+
+
 # Drop connection on any protocol violation
 sub _protocol_error {
     my ($hdl, $reason) = @_;
@@ -134,7 +158,7 @@ sub _handle_start {
     my ($hdl, $data) = @_;
     return _protocol_error($hdl, "expected 'START'") unless $data eq 'START';
 
-    print "\nOK\n";
+    print "[START] - yep!\n";
     # Read TAG next (4 bytes)
     $hdl->push_read( chunk => 4, \&_handle_tag );
 }
@@ -144,7 +168,7 @@ sub _handle_tag {
     my ($hdl, $tag) = @_;
     $hdl->{_proto}->{tag} = $tag;
 
-    print "TAG [$tag]\n";
+    print "[TAG] [$tag] - yep!\n";
     # First LEN byte (1 byte)
     $hdl->push_read( chunk => 1, \&_handle_len );
 }
@@ -154,6 +178,7 @@ sub _handle_len {
     my ($hdl, $len_byte) = @_;
     my $len = unpack 'C', $len_byte;   # unsigned char 0-255
 
+    print "[LEN] == [$len] = waiting bytes...\n";
     if ($len == 0) {
         # Expect literal “STOP” afterwards
         $hdl->push_read( chunk => 4, \&_handle_stop );
@@ -174,7 +199,7 @@ sub _handle_len {
     });
 }
 
-# STEP 4 – verify literal “STOP” and finish
+# STEP 4 – verify literal “STOP”, send ACK, and finish
 sub _handle_stop {
     my ($hdl, $data) = @_;
     return _protocol_error($hdl, "expected 'STOP'") unless $data eq 'STOP';
@@ -187,8 +212,10 @@ sub _handle_stop {
 
     print "[$src] Received TAG=$tag, $cnt blob(s), total $size byte(s)\n";
 
-    # No response required – protocol is strictly unidirectional.
-    $hdl->destroy;   # close connection
+    # Acknowledge the client and close once all data were sent
+    $hdl->push_write("OK\n");
+    $hdl->push_shutdown;          # graceful half-close
+    $hdl->on_drain( sub { shift->destroy } );
 }
 
 #######################################################################
