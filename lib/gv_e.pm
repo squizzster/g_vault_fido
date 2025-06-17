@@ -68,6 +68,15 @@ my $_recover = sub {
     while ( $node && !$seen{ refaddr $node }++ ) {
         my %d     = $node->();               # {mode,param,stored_byte,index,next_node}
 
+        unless (%d &&
+                defined $d{mode} &&
+                defined $d{stored_byte} &&
+                defined $d{index} &&
+                exists $d{next_node}
+               ) {
+            return (undef, ERR_INTERNAL_STATE . ' Node recovery failed: Invalid data from node.');
+        }
+
         # undo node-level obfuscation
         my $orig  = $_undo->( @d{qw(mode param stored_byte)} );
 

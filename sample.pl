@@ -69,12 +69,10 @@ if ( $ring ) {
     gv_s::save_cipher_ring($ring, $file, 1);
 }
 
-###$ring_name = 'master_secrets_2';
-###$file      = '/tmp/g_vault_master_secrets_2._gvr_';
-
 # 2) load (put in cache once)
 gv_l::gv_l($file)->();
 
+print "\n\n";
 my $pepper = '12345678' x 4;   # 32-byte pepper
 use Data::Dump qw(dump);
 
@@ -86,8 +84,7 @@ my ($sig_blob, $sign_err) = gv_m::sign(
 );
 die "sign: $sign_err" unless defined $sig_blob;
 
-print "SIGNED => " . ( dump $sig_blob ) . "\n";
-
+#print "SIGNED => " . ( encode_hex( $sig_blob ) ) . "\n";
 
 # 5) Verify on the receiving side:
 #    (Assumes you’ve loaded the same ring into gv_l cache
@@ -100,7 +97,7 @@ my ($ok, $verify_err) = gv_m::verify(
 
 
 if ($ok) {
-   say "✅ signature valid! . " . length($sig_blob);
+   say "✅ signature valid! [" . encode_hex($sig_blob) . "].\n";
 } else {
    die "❌ verification failed: $verify_err";
 }
@@ -125,8 +122,8 @@ for (1 .. $goes) {
 #
 
 die "encrypt error: $eerr\n" if $eerr;
-say "Ciphertext bytes: ", length($blob);
-say "Ciphertext bytes: ", encode_hex($blob);
+#say "Ciphertext bytes: ", length($blob);
+#say "Ciphertext bytes: ", encode_hex($blob);
 
 #my $ciphertext = substr($blob, 64 + 64 + 12, length($blob) - 64 - 64 - 12 - 16);
 
@@ -145,10 +142,10 @@ my ($out,$derr) = gv_d::decrypt({
     aad         => "$aad",
 });
 
-my $pre_blob = decode_hex('62393631336235393737336634313765636437323436333736623266643839393665613038643766366561336634383762383237666166366138643233303039dfe9da90183d6a36445f605f689a21fa2129b256a81d19853b7268c41f28c79efaaacfccbe25ba20acb84d5e55e27d908529b6099d90a5c7d783368427c56886a08cb0fbfaec38a16d644233edcf1a8d5a2b3c6cb4d9712c907b5f685a6558c74bd5540f70e2333ae3acb9371a3ec79f2b8133743083c9e54e31d85f47d69a7dc3fe9f0f53003dc570f56ef4be3fc13293a5b343521577c4555f540d1edcd7c15ea1f387af896f1406674562443be639f72f818292aed5dbcf2316643b29a9491ae1149109a7cebc91fa5893849dc33669d56fe12e8eabb4ce22bad73fc6c9d8a74e2714ebece1218079d207e1735994345ae9457b09ae81817ff1e8bd9ffc018655e5dd43288c79443a98d30b7a597413c572b478db57ad71f3d00d5ef2c54b7112a78ba276d8ef8053647ffc1de2bc5acdaf9a553210e736e97a476951d6d420b78281da09bc8d9e118b549a713772214873a755f1c9922c5d7b22af8b89df3b85c4b3ad');
+my $x_blob = decode_hex('62393631336235393737336634313765636437323436333736623266643839393665613038643766366561336634383762383237666166366138643233303039dfe9da90183d6a36445f605f689a21fa2129b256a81d19853b7268c41f28c79efaaacfccbe25ba20acb84d5e55e27d908529b6099d90a5c7d783368427c56886a08cb0fbfaec38a16d644233edcf1a8d5a2b3c6cb4d9712c907b5f685a6558c74bd5540f70e2333ae3acb9371a3ec79f2b8133743083c9e54e31d85f47d69a7dc3fe9f0f53003dc570f56ef4be3fc13293a5b343521577c4555f540d1edcd7c15ea1f387af896f1406674562443be639f72f818292aed5dbcf2316643b29a9491ae1149109a7cebc91fa5893849dc33669d56fe12e8eabb4ce22bad73fc6c9d8a74e2714ebece1218079d207e1735994345ae9457b09ae81817ff1e8bd9ffc018655e5dd43288c79443a98d30b7a597413c572b478db57ad71f3d00d5ef2c54b7112a78ba276d8ef8053647ffc1de2bc5acdaf9a553210e736e97a476951d6d420b78281da09bc8d9e118b549a713772214873a755f1c9922c5d7b22af8b89df3b85c4b3ad');
 
 my ($xout,$xderr) = gv_d::decrypt({
-    cipher_text => $pre_blob,
+    cipher_text => $x_blob,
     pepper      => $pepper,
     aad         => "$aad",
 });
@@ -159,33 +156,8 @@ die "decrypt error: $derr\n" if $derr;
 say " x $goes";
 say "Recovered: " . substr($out,0,200) if defined $out;
 say "Recovered: " . substr($xout,0,200) if defined $xout;
+
 #say "Ring equal [$is_ring_equal].\n";
 
 sub encode_hex { unpack 'H*', $_[0] }
 sub decode_hex { pack 'H*', $_[0] }
-sub _old_rings_equal {
-    use Scalar::Util qw(refaddr);
-
-    my ($r1, $r2) = @_;
-    return 0
-        unless $r1->{name_hash} eq $r2->{name_hash} && $r1->{mac_key} eq $r2->{mac_key};
-
-    my $n1 = $r1->{first_node};
-    my $n2 = $r2->{first_node};
-
-    do {
-        my %a = $n1->();
-        my %b = $n2->();
-        return 0
-            unless $a{index} == $b{index}
-                && $a{stored_byte} == $b{stored_byte}
-                && $a{mode} eq $b{mode}
-                && (   (!defined $a{param} && !defined $b{param})
-                    || $a{param} eq $b{param});
-
-        $n1 = $a{next_node};
-        $n2 = $b{next_node};
-    } while ( refaddr($n1) != refaddr($r1->{first_node}) );
-
-    return 1;
-}

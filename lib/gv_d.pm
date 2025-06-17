@@ -61,6 +61,21 @@ my $_recover = sub {
     while ( $n && !$seen{ refaddr $n }++ ) {
 
         my %d     = $n->();                          # node callback
+
+        unless (%d &&
+                defined $d{mode} &&
+                defined $d{stored_byte} &&
+                defined $d{index} &&
+                # $d{param} can be undef if $d{mode} == 3.
+                # $d{next_node} should always be present in a circular list.
+                exists $d{next_node}
+               ) {
+            # Node data is invalid, likely due to MAC mismatch in the node closure (gv_l.pm)
+            # or some other unexpected error within the node.
+            # The gv_l node closure would have carp'd the "HMAC mismatch" already.
+            return (undef, ERR_INTERNAL_STATE . ' Node recovery failed: Invalid data from node.');
+        }
+
         my $orig  = $_undo->( @d{qw(mode param stored_byte)} );
 
         # work out the final plaintext byte
