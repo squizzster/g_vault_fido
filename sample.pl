@@ -57,7 +57,7 @@ use gv_m       ();    # decrypt
 use gv_random  ();    # crypto-graphic random bytes
 
 my $ring_name = 'memory';
-my $file      = '/tmp/g_vault_master_secrets_memory_11._gvr_';
+my $file      = '/tmp/g_vault_master_secrets_memory_12._gvr_';
 
 # 1) build & save
 my ($ring,$err);

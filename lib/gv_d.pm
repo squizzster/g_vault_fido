@@ -2,14 +2,10 @@ package gv_d;
 use v5.24;
 use strict;
 use warnings;
-use Scalar::Util qw(refaddr);
 
+use gv_e; # For _recover_for_mac, _derive_for_mac
 use Crypt::AuthEnc::ChaCha20Poly1305 qw(chacha20poly1305_decrypt_verify);
-use Crypt::KeyDerivation             qw(hkdf);
-use Crypt::Digest::BLAKE2b_256       qw(blake2b_256 blake2b_256_hex);
 use Crypt::Digest::BLAKE2b_512       qw(blake2b_512);
-use Math::Random::MT;
-use Carp qw(croak);
 
 use constant {
     MASTER_SECRET_LEN           => 512,
@@ -25,81 +21,6 @@ use constant {
     ERR_RING_NOT_AVAILABLE      => 'Ring not loaded.',
     BLAKE_AAD_TAG               => pack("H*", '83cddaa3fbfcabc498527218b3fa4aa6'),
     BLAKE_DET_TAG               => pack("H*", '3562861b7919fa497b42725d6f9548ae'),
-};
-
-my $_undo = sub { my ($m,$p,$b)=@_;
-    return ($b ^ $p)                      if $m==0;
-    return (($b>>$p)|($b<<(8-$p))) & 0xFF if $m==1;
-    return ($b - $p) & 0xFF               if $m==2;
-    return (~$b) & 0xFF;
-};
-
-my $_det = sub { my ($s)=@_;
-    my $h=Crypt::Digest::BLAKE2b_256::blake2b_256(BLAKE_DET_TAG . $s,'',DPRNG_SEED_HASH_LEN);
-    my @i=unpack 'N*',$h;
-    my $mt=Math::Random::MT->new(@i);
-    pack 'N*',map{$mt->irand}1..(DETERMINISTIC_COMPONENT_LEN/4);
-};
-
-my $_recover = sub {
-    my ($ring, $salt, $pep) = @_;
-
-    return (undef, 'bad ring')   unless ref $ring eq 'HASH';
-    return (undef, 'bad salt')   if length($salt)   != DYNAMIC_SALT_LEN;
-    return (undef, 'bad pepper') if length($pep)    != PEPPER_LEN;
-
-    my @sb = unpack 'C*', $salt;
-    my @pb = unpack 'C*', $pep;
-
-    my %seen;
-    my $n    = $ring->{first_node};
-
-    # --- allocate the output buffer once (512 bytes) -------------
-    my $sm   = "\0" x MASTER_SECRET_LEN;
-    my $idx  = 0;
-
-    while ( $n && !$seen{ refaddr $n }++ ) {
-
-        my %d     = $n->();                          # node callback
-
-        unless (%d &&
-                defined $d{mode} &&
-                defined $d{stored_byte} &&
-                defined $d{index} &&
-                # $d{param} can be undef if $d{mode} == 3.
-                # $d{next_node} should always be present in a circular list.
-                exists $d{next_node}
-               ) {
-            # Node data is invalid, likely due to MAC mismatch in the node closure (gv_l.pm)
-            # or some other unexpected error within the node.
-            # The gv_l node closure would have carp'd the "HMAC mismatch" already.
-            return (undef, ERR_INTERNAL_STATE . ' Node recovery failed: Invalid data from node.');
-        }
-
-        my $orig  = $_undo->( @d{qw(mode param stored_byte)} );
-
-        # work out the final plaintext byte
-        my $byte  = $orig
-                  ^ $pb[ $d{index} % PEPPER_LEN ]
-                  ^ $sb[ $d{index} % DYNAMIC_SALT_LEN ];
-
-        # write directly into the buffer (8-bit slot)
-        vec( $sm, $idx++, 8 ) = $byte;
-
-        $n = $d{next_node};
-    }
-
-    return (undef, 'cycle') unless $idx == MASTER_SECRET_LEN;
-    return ($sm, undef);
-};
-
-my $_derive=sub{
-    my($sm,$salt,$pep)=@_;
-    my$det=$_det->($sm.$salt.$pep);
-    my$ikm=$sm.$pep.$det;
-    my$k=hkdf($ikm,$salt,'BLAKE2b_256',32,'key');
-    my$n=hkdf($ikm,$salt,'BLAKE2b_256',12,'nonce');
-    [$k,$n];
 };
 
 #────────────────────────────────────────────────────────────────────
@@ -126,11 +47,10 @@ sub decrypt {
     my $ring = gv_l::get_cached_ring($name_hash)
         or return (undef,ERR_RING_NOT_AVAILABLE);
 
-    my ($sm,$er1) = $_recover->($ring,$salt,$pepper);
-    return (undef,ERR_INTERNAL_STATE) if $er1 && $er1 =~ /MAC mismatch|cycle/;
-    return (undef,ERR_DECRYPTION_FAILED) if $er1;
+    my ($sm, $er1) = gv_e::_recover_for_mac($ring, $salt, $pepper);
+    return (undef, ERR_DECRYPTION_FAILED) if $er1;
 
-    my ($k,$nck) = @{ $_derive->($sm,$salt,$pepper) };
+    my ($k, $nck) = @{ gv_e::_derive_for_mac($sm, $salt, $pepper) };
     return (undef,ERR_DECRYPTION_FAILED) if $nck ne $nonce;
 
     my $pt;

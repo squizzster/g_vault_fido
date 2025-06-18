@@ -128,8 +128,7 @@ sub encrypt {
 
     my $salt = gv_random::get_bytes(DYNAMIC_SALT_LEN);
     my ($sm,$er1) = $_recover->($ring,$salt,$pep);
-    return (undef,ERR_INTERNAL_STATE) if $er1 && $er1 =~ /MAC mismatch|cycle/;
-    return (undef,ERR_ENCRYPTION_FAILED) if $er1;
+    return (undef, ERR_ENCRYPTION_FAILED) if $er1;
 
     my ($k,$nonce) = @{ $_derive->($sm,$salt,$pep) };
 
@@ -140,4 +139,3 @@ sub encrypt {
     return ($name_hash.$salt.$nonce.$ct.$tag, undef);
 }
 1;
-
