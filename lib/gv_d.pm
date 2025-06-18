@@ -12,15 +12,12 @@ use constant {
     DYNAMIC_SALT_LEN            => 64,
     MAC_OUTPUT_LEN              => 16,
     PEPPER_LEN                  => 32,
-    DETERMINISTIC_COMPONENT_LEN => 32,
-    DPRNG_SEED_HASH_LEN         => 32,
     NAME_HASH_HEX_LEN           => 64,
     ERR_DECRYPTION_FAILED       => 'Decryption failed.',
     ERR_INVALID_INPUT           => 'Invalid input provided.',
     ERR_INTERNAL_STATE          => 'Internal state error detected.',
     ERR_RING_NOT_AVAILABLE      => 'Ring not loaded.',
     BLAKE_AAD_TAG               => pack("H*", '83cddaa3fbfcabc498527218b3fa4aa6'),
-    BLAKE_DET_TAG               => pack("H*", '3562861b7919fa497b42725d6f9548ae'),
 };
 
 #────────────────────────────────────────────────────────────────────

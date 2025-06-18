@@ -8,7 +8,6 @@ use Crypt::AuthEnc::ChaCha20Poly1305 qw(chacha20poly1305_encrypt_authenticate);
 use Crypt::KeyDerivation             qw(hkdf);
 use Crypt::Digest::BLAKE2b_256       qw(blake2b_256 blake2b_256_hex);
 use Crypt::Digest::BLAKE2b_512       qw(blake2b_512);
-use Math::Random::MT;
 use Carp qw(croak);
 
 use constant {
@@ -16,8 +15,6 @@ use constant {
     DYNAMIC_SALT_LEN            => 64,
     MAC_OUTPUT_LEN              => 16,
     PEPPER_LEN                  => 32,
-    DETERMINISTIC_COMPONENT_LEN => 32,
-    DPRNG_SEED_HASH_LEN         => 32,
     NAME_HASH_HEX_LEN           => 64,
     ERR_ENCRYPTION_FAILED       => 'Encryption failed.',
     ERR_INVALID_INPUT           => 'Invalid input provided.',
@@ -25,8 +22,6 @@ use constant {
     ERR_RING_NOT_AVAILABLE      => 'Ring not loaded.',
     BLAKE_NAME_TAG              => pack("H*", 'ee4bcef77cb49c70f31de849dccaab24'),
     BLAKE_AAD_TAG               => pack("H*", '83cddaa3fbfcabc498527218b3fa4aa6'),
-    BLAKE_DET_TAG               => pack("H*", '3562861b7919fa497b42725d6f9548ae'),
-
 };
 
 my $_undo = sub { my ($m,$p,$b)=@_;
@@ -34,14 +29,6 @@ my $_undo = sub { my ($m,$p,$b)=@_;
     return (($b>>$p)|($b<<(8-$p))) & 0xFF if $m==1;
     return ($b - $p) & 0xFF               if $m==2;
     return (~$b) & 0xFF;
-};
-my $_det = sub {
-    my ($seed)=@_;
-    # Now includes DET_TAG
-    my $h = Crypt::Digest::BLAKE2b_256::blake2b_256(BLAKE_DET_TAG . $seed,'',DPRNG_SEED_HASH_LEN);
-    my @i = unpack 'N*',$h;
-    my $mt = Math::Random::MT->new(@i);
-    pack 'N*', map { $mt->irand } 1..(DETERMINISTIC_COMPONENT_LEN/4);
 };
 
 # internal
@@ -97,8 +84,7 @@ my $_recover = sub {
 
 my $_derive = sub {
     my ($sm,$salt,$pep)=@_;
-    my $det = $_det->($sm.$salt.$pep);
-    my $ikm = $sm.$pep.$det;
+    my $ikm = $sm.$pep;
     my $k   = hkdf($ikm,$salt,'BLAKE2b_256',32,'key');
     my $n   = hkdf($ikm,$salt,'BLAKE2b_256',12,'nonce');
     [$k,$n];
