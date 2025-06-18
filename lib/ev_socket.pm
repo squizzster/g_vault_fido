@@ -169,6 +169,12 @@ sub _handle_tag {
     $hdl->{_proto}->{tag} = $tag;
 
     print "[TAG] [$tag] - yep!\n";
+    if (  uc($tag) eq 'DONE'  ) {
+        $hdl->push_write("DONE\n");
+        $hdl->push_shutdown;          # graceful half-close
+        $hdl->on_drain( sub { shift->destroy } );
+        return;
+    }
     # First LEN byte (1 byte)
     $hdl->push_read( chunk => 1, \&_handle_len );
 }
@@ -181,7 +187,7 @@ sub _handle_len {
     print "[LEN] == [$len] = waiting bytes...\n";
     if ($len == 0) {
         # Expect literal “STOP” afterwards
-        $hdl->push_read( chunk => 4, \&_handle_stop );
+        $hdl->push_read( chunk => 4, \&_handle_tag );
         return;
     }
 
@@ -214,8 +220,9 @@ sub _handle_stop {
 
     # Acknowledge the client and close once all data were sent
     $hdl->push_write("OK\n");
-    $hdl->push_shutdown;          # graceful half-close
-    $hdl->on_drain( sub { shift->destroy } );
+    $hdl->push_read( chunk => 4, \&_handle_tag );
+    #$hdl->push_shutdown;          # graceful half-close
+    #$hdl->on_drain( sub { shift->destroy } );
 }
 
 #######################################################################

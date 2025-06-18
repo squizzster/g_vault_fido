@@ -207,6 +207,7 @@ sub __fifo_iwf_retry_loop {                             # AI_ROBUST
              ? IN_OPEN | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF
              : IN_CLOSE_WRITE;
 
+    print "MASK [$mask]\n";
     my ($attempt, $max_attempts) = (0, 5);
 
   RETRY: {
@@ -402,7 +403,18 @@ BEGIN {                  # kept identical except moved
         if defined &IN_CLOSE_NOWRITE;
 }
 
-sub __fifo_mask_str {                                 # ≤ 25 loc
+sub __fifo_mask_str {
+    my ($m) = @_;
+    my @descs;
+    for my $flag (sort { $a <=> $b } keys %MASK2NAME) {
+        push @descs, $MASK2NAME{$flag} if $m & $flag;
+    }
+    return @descs
+        ? join(', ', @descs)
+        : sprintf('unknown mask 0x%X', $m);
+}
+
+sub _OLD___fifo_mask_str {                                 # ≤ 25 loc
     my $m = shift;
     my @n;
     push @n, $MASK2NAME{$_} for grep { $m & $_ } keys %MASK2NAME;
@@ -466,7 +478,7 @@ sub __fifo_ie_dispatch {                             # ≤ 50 loc
     my ($g,$event,$ino) = @_;
     my $mask = $event->mask;
     my $ev_path = $event->fullname // 'unknown';
-
+    ##my $mask_name =  __fifo_mask_str($mask); ##print "IE_DISPATCH [$mask_name]\n";
     if ($mask & IN_Q_OVERFLOW){ return __fifo_ie_overflow($g,$event) }
 
     if ($mask & IN_IGNORED){ return __fifo_ie_ignored($g,$ev_path,$ino) }
