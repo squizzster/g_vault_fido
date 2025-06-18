@@ -3,7 +3,6 @@ use v5.24;
 use strict;
 use warnings;
 
-use gv_e; # For _recover_for_mac, _derive_for_mac
 use Crypt::AuthEnc::ChaCha20Poly1305 qw(chacha20poly1305_decrypt_verify);
 use Crypt::Digest::BLAKE2b_512       qw(blake2b_512);
 
@@ -47,7 +46,7 @@ sub decrypt {
     my ($sm, $er1) = gv_e::_recover_for_mac($ring, $salt, $pepper);
     return (undef, ERR_DECRYPTION_FAILED) if $er1;
 
-    my ($k, $nck) = @{ gv_e::_derive_for_mac($sm, $salt, $pepper) };
+    my ($k, $nck) = @{ gv_e::_derive_for_aead($sm, $salt, $pepper) };
     return (undef,ERR_DECRYPTION_FAILED) if $nck ne $nonce;
 
     my $pt;

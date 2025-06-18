@@ -22,6 +22,19 @@ use constant {
     ERR_RING_NOT_AVAILABLE      => 'Ring not loaded.',
     BLAKE_NAME_TAG              => pack("H*", 'ee4bcef77cb49c70f31de849dccaab24'),
     BLAKE_AAD_TAG               => pack("H*", '83cddaa3fbfcabc498527218b3fa4aa6'),
+
+    # -- Domain Separation Tags for Key Derivation --
+    # Binary random prefixes for IKM and Salt
+    DS_IKM_AEAD                 => pack( "H*", '944162c236618cab10650605c7181c0c' ),
+    DS_IKM_MAC                  => pack( "H*", 'a0d9d7c2483afa20ec7bfcf3759c0229' ), 
+    DERIVE_SALT_PREFIX_1        => pack( "H*", 'dfdd2bd94f72efcea506d7257c096dbe' ),
+    DERIVE_SALT_PREFIX_2        => pack( "H*", 'd1d608365399edf5a45c3b84e43bbda1' ),
+    DERIVE_SALT_PREFIX_3        => pack( "H*", 'a4504b6b21f0835920573bd9f308a1ff' ),
+
+    # Human-readable labels for HKDF 'info' parameter
+    DS_INFO_AEAD_KEY            => 'GVAULT::INFO_AEAD_KEY::V1',
+    DS_INFO_AEAD_NONCE          => 'GVAULT::INFO_AEAD_NONCE::V1',
+    DS_INFO_MAC_KEY             => 'GVAULT::INFO_MAC_KEY::V1',
 };
 
 my $_undo = sub { my ($m,$p,$b)=@_;
@@ -82,18 +95,27 @@ my $_recover = sub {
     return ($secret, undef);
 };
 
-my $_derive = sub {
+my $_derive_aead_params = sub {
     my ($sm,$salt,$pep)=@_;
-    my $ikm = $sm.$pep;
-    my $k   = hkdf($ikm,$salt,'BLAKE2b_256',32,'key');
-    my $n   = hkdf($ikm,$salt,'BLAKE2b_256',12,'nonce');
+    my $ikm = DS_IKM_AEAD . $sm . $pep;
+    my $k   = hkdf($ikm, DERIVE_SALT_PREFIX_1 . $salt, 'BLAKE2b_256', 32, DS_INFO_AEAD_KEY);
+    my $n   = hkdf($ikm, DERIVE_SALT_PREFIX_2 . $salt, 'BLAKE2b_256', 12, DS_INFO_AEAD_NONCE);
     [$k,$n];
 };
+
+my $_derive_mac_key = sub {
+    my ($sm,$salt,$pep)=@_;
+    my $ikm = DS_IKM_MAC . $sm . $pep;
+    my $k   = hkdf($ikm, DERIVE_SALT_PREFIX_3 . $salt, 'BLAKE2b_256', 32, DS_INFO_MAC_KEY);
+    [$k];
+};
+
 
 #────────────────────────────────────────────────────────────────────
 # expose internal recover+derive closures for downstream use
 sub _recover_for_mac { goto &{ $_recover } }
-sub _derive_for_mac  { goto &{ $_derive  } }
+sub _derive_for_mac  { goto &{ $_derive_mac_key } }
+sub _derive_for_aead { goto &{ $_derive_aead_params } }
 
 
 sub encrypt {
@@ -116,7 +138,7 @@ sub encrypt {
     my ($sm,$er1) = $_recover->($ring,$salt,$pep);
     return (undef, ERR_ENCRYPTION_FAILED) if $er1;
 
-    my ($k,$nonce) = @{ $_derive->($sm,$salt,$pep) };
+    my ($k,$nonce) = @{ $_derive_aead_params->($sm,$salt,$pep) };
 
     my ($ct,$tag);
     eval { ($ct,$tag)=chacha20poly1305_encrypt_authenticate($k,$nonce,$aad_hashed,$pt); 1 }
