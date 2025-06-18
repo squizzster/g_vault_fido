@@ -5,10 +5,11 @@ use warnings;
 
 use Carp qw(croak);
 use Crypt::Digest::BLAKE2b_256 qw(blake2b_256 blake2b_256_hex);
+use Crypt::Digest::BLAKE2b_512 ();
 use Crypt::Mode::CBC;
 
 use constant {
-    MASTER_SECRET_LEN => 512,
+    MASTER_SECRET_LEN => 32,
     MAC_KEY_LEN       => 32,
     MAC_OUTPUT_LEN    => 16,   # 128-bit tag
     AES_KEY_LEN       => 32,   # AES-256
@@ -42,8 +43,11 @@ sub build_cipher_ring {
     my $name = $a{name} // return ( undef, 'Name required' );
 
     # -- master secret --------------------------------------------------
-    my $master = $a{master_secret} // gv_random::get_bytes(MASTER_SECRET_LEN);
-    return ( undef, 'Master secret wrong length' )
+    my $master = $a{master_secret}
+        ? Crypt::Digest::BLAKE2b_256::blake2b_256($a{master_secret})
+        : gv_random::get_bytes(MASTER_SECRET_LEN);
+
+    return ( undef, 'Master secret wrong length ' . length($master) )
         unless length $master == MASTER_SECRET_LEN;
 
     # -- static derivations ---------------------------------------------

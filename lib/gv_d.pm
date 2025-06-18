@@ -7,7 +7,7 @@ use Crypt::AuthEnc::ChaCha20Poly1305 qw(chacha20poly1305_decrypt_verify);
 use Crypt::Digest::BLAKE2b_512       qw(blake2b_512);
 
 use constant {
-    MASTER_SECRET_LEN           => 512,
+    MASTER_SECRET_LEN           => 32,
     DYNAMIC_SALT_LEN            => 64,
     MAC_OUTPUT_LEN              => 16,
     PEPPER_LEN                  => 32,

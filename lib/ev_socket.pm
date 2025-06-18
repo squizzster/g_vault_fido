@@ -1,242 +1,257 @@
 package ev_socket;
-
-########################################################################
-# ev_socket.pm – create a UNIX-domain listener and serve a strict
-#                binary protocol via AnyEvent
-#                Protocol:
-#                  • “START”   (5 bytes, literal)
-#                  • TAG       (4 bytes, arbitrary ASCII)
-#                  • zero-or-more repetitions of:
-#                      ◦ LEN   (1 byte, 0-255)
-#                      ◦ DATA  (LEN bytes)
-#                  • LEN == 0  ⇒ terminate sequence, then
-#                  • “STOP”    (4 bytes, literal)
-#                Any deviation → immediate connection drop.
-#                On successful completion, we reply with “OK\n”.
+###############################################################################
+# ev_socket.pm – AnyEvent-driven multi-listener / multi-client UNIX-socket
+#                server for a strict binary protocol.
 #
-#      /usr/bin/printf 'STARTECHO\005HELLO\004WOOF\000STOP' | socat 
-########################################################################
-
+#  Protocol (all literals are ASCII):
+#    • "START"  (5 B)
+#    • TAG      (4 B, arbitrary ASCII, upper-cased by server)
+#    • zero-or-more repetitions of
+#        ◦ LEN  (1 B, 0-255)
+#        ◦ DATA (LEN B)
+#    • LEN == 0 → terminator, then
+#    • "STOP"   (4 B)
+#
+#  On success the server replies "OK\n"; any deviation drops the connection.
+#
+#  Public API
+#  ----------
+#    add( $g, %opts )
+#      path      => '/tmp/foo.sock' | 'myname'
+#      abstract  => 0|1
+#      mode      => file-mode (octal)
+#      backlog   => listen backlog (default SOMAXCONN)
+#
+#    remove( $g, $path )
+#      Gracefully drops the listener and all of its clients.
+#
+#    shutdown_all( $g )
+#      Convenience helper that closes every listener and client.
+#
+###############################################################################
 use strict;
 use warnings;
 
-use AnyEvent::Handle;
-use IO::Socket::UNIX;
-use Data::Dump qw(dump);
+use AnyEvent                  qw();
+use AnyEvent::Handle          qw();
+use IO::Socket::UNIX          qw();
+use Socket                    qw(SOMAXCONN);
+use Scalar::Util              qw(weaken);
+use Carp                      qw(croak);
+use Data::Dump                qw(dump);
 use make_unix_socket;
 use get_peer_cred;
 use gv_dir;
 
-use Socket qw(SOMAXCONN);
+our $VERSION = '0.3';
 
-#######################################################################
-# add – register a listener for a given path and mode
-#######################################################################
-sub add {
-    my ($g, %args) = @_;
+###############################################################################
+# add( $g, %opts ) – register a new listening socket
+###############################################################################
 
-    #–––––––––––––––––––––––– Parameter sanity ––––––––––––––––––––––––#
-    my $path     = $args{path};
-    my $abstract = $args{abstract} // 0;
-    $path = gv_dir::abs($path) if defined $path && !$abstract;
-    unless ($path) { warn "ev_socket::add requires 'path' parameter\n"; return }
+sub add { 
+    local $@; 
+    my $r = eval { _add(@_) }; 
+    $@ ? (warn "add failed: $@", undef) : $r 
+}
 
-    my $mode = $args{mode};
-    unless (defined $mode) { warn "ev_socket::add requires 'mode' parameter\n"; return }
+sub _add {
+    my ($g, %opts) = @_;
 
-    # Prevent re-registering the same watcher
-    if (   $g->{_watcher}
-        && $g->{_watcher}->{ev_socket}
-        && $g->{_watcher}->{ev_socket}->{$path})
-    {
-        warn "ev_socket::add: socket for $path already exists\n";
-        return;
-    }
+    #––––– parameters –––––#
+    my $path     = $opts{path}     // croak "add(): 'path' required";
+    my $abstract = $opts{abstract} // 0;
+    my $mode     = $opts{mode}     // croak "add(): 'mode' required";
+    my $backlog  = $opts{backlog}  // SOMAXCONN;
 
-    # Backlog
-    my $backlog = $args{backlog} // SOMAXCONN;
+    $path = gv_dir::abs($path) unless $abstract;
     $backlog = SOMAXCONN if $backlog > SOMAXCONN;
 
-    #––––––––––––––––––––––– Create listening socket –––––––––––––––––––#
+    #––––– init global bucket –––––#
+    $g->{ev_socket} //= { listeners => {} };
+
+    #––––– de-dup –––––#
+    return if $g->{ev_socket}{listeners}{$path};
+
+    #––––– create socket –––––#
     my $listener = make_unix_socket::make_unix_socket(
         path     => $path,
         mode     => $mode,
-        backlog  => int($backlog),
+        backlog  => $backlog,
         abstract => $abstract,
-    ) or do {
-        warn "Failed to set up socket at $path; see STDERR for details\n";
-        return;
+    ) or croak "failed to create socket at $path";
+
+    my $shown = $abstract ? "(abstract:$path)" : $path;
+    print "Listening on $shown [$listener]\n";
+
+    #––––– registry entry –––––#
+    my $entry = $g->{ev_socket}{listeners}{$path} = {
+        listener  => $listener,
+        clients   => {},                 # key = "$client"
+        guard     => undef,              # AE watcher
+        abstract  => $abstract,
     };
 
-    my $shown = $abstract ? "(abstract:$args{path})" : $path;
-    print "Listening on $shown… [$listener]\n";
-
-    #––––––––––––––––––––––––– Accept loop ––––––––––––––––––––––––––––#
-    $g->{_watcher}->{ev_socket}->{$path} = AnyEvent->io(
+    #––––– AE accept loop –––––#
+    $entry->{guard} = AnyEvent->io(
         fh   => $listener,
         poll => 'r',
         cb   => sub {
             my $client = $listener->accept or return;
+            my $id     = "$client";
 
-            # Non-optional peer-cred check
             my $creds = get_peer_cred::get_peer_cred($client);
-            unless (   $creds
-                    && defined $creds->{gid}
-                    && defined $creds->{pid}
-                    && defined $creds->{uid})
-            {
-                $client->close;
-                return;
+            unless ( $creds && defined $creds->{uid} ) {
+                warn "[$shown] peer-cred check failed, dropping\n";
+                $client->close; return;
             }
-            print STDERR "\n" . dump($creds) . "\n";
 
-            my $hdl;
-            $hdl = AnyEvent::Handle->new(
-                fh       => $client,
-                on_error => sub { 
-                     my ( $handle, $fatal, $message ) = @_;
-                     _eof_error ($handle, $fatal, $message); 
-                     $hdl->destroy;
-                     return;
-                },
-                on_eof   => sub { 
-                     my ( $handle, $fatal, $message ) = @_;
-                     _eof_error ($handle, $fatal, $message); 
-                     $hdl->destroy;
-                     return; 
-                },
-                rbuf_max => 4096,
-                wbuf_max => 4096,
+            my $h = AnyEvent::Handle->new(
+                fh        => $client,
+                rbuf_max  => 4 * 1024,
+                wbuf_max  => 4 * 1024,
+                timeout   => 10,
+                on_error  => \&_eof_error,
+                on_eof    => \&_eof_error,
             );
 
-            # Stash path for diagnostics & logging
-            $hdl->{socket_path} = $shown;
-
-            # Idle timeout
-            $hdl->timeout(3);
-
-            # State for the strict protocol
-            $hdl->{_proto} = {
-                tag   => undef,  # 4-byte TAG
-                blobs => [],     # array-ref of binary chunks
+            $h->{ctx} = $entry->{clients}{$id} = {
+                creds       => $creds,
+                handle      => $h,
+                socket_path => $shown,
+                proto       => { tag => undef, blobs => [] },
+                parent      => $entry,
             };
+            weaken $h->{ctx}{parent};
 
-            # PRIME the binary protocol – wait for “START”
-            $hdl->push_read( chunk => 5, \&_handle_start );
-        }
-    );
+            warn "|| CLIENT_CONNECT || pid=$creds->{pid} || src=$shown ||\n";
+            # prime protocol
+            $h->push_read( chunk => 5, \&_handle_start );
+        });
 
-    return 1 if $g->{_watcher}->{ev_socket}->{$path};
-    warn "ev_socket::add: failed to register watcher\n";
-    return;
+    return 1;
 }
 
-#######################################################################
-# Private helpers for the strict binary protocol
-#######################################################################
+###############################################################################
+# remove( $g, $path ) – drop a single listener
+###############################################################################
+sub remove {
+    my ($g, $path) = @_;
+    return unless $g && $g->{ev_socket} && $g->{ev_socket}{listeners}{$path};
 
-# EOF or ERROR 
+    my $entry = delete $g->{ev_socket}{listeners}{$path};
+
+    $_->{handle}->destroy for values %{ $entry->{clients} };
+    $entry->{guard}  = undef;
+    $entry->{listener}->close if $entry->{listener};
+    return 1;
+}
+
+###############################################################################
+# shutdown_all( $g ) – stop everything
+###############################################################################
+sub shutdown_all {
+    my ($g) = @_;
+    return unless $g && $g->{ev_socket};
+
+    remove( $g, $_ ) for keys %{ $g->{ev_socket}{listeners} };
+    delete $g->{ev_socket};
+    return 1;
+}
+
+###############################################################################
+# INTERNAL HELPERS
+###############################################################################
 sub _eof_error {
-    my ($hdl, $fatal, $reason) = @_;
-    my $src  = $hdl->{socket_path} // '<unknown>';
-    $fatal   = $fatal              // '0';
-    $reason  = $reason             // 'none';
-    warn "[$src] [EOF/ERROR] [$fatal] [$reason].\n";
+    my ($h, $fatal, $msg) = @_;
+
+    # When called via on_eof $fatal/$msg are undef ⇒ normal EOF.
+    my $ctx = $h->{ctx} || {};
+
+    if ( defined $fatal ) {
+        $msg = $msg // 'unknown';
+        _detach_client($ctx, 1, $msg);
+    } else {
+        _detach_client($ctx, 0, 'eof');
+    }
+
+    $h->destroy;
 }
 
+sub _detach_client {
+    my ($ctx, $is_error, $why) = @_;
+    return unless $ctx && $ctx->{parent};
+    my $src = $ctx->{socket_path} // '<unknown>';
+    my $pid = $ctx->{creds}->{pid};
+    warn "|| CLIENT_CLOSED  || pid=$pid || src=$src || is_error=$is_error || why=$why ||\n";
+    delete $ctx->{parent}{clients}{ "$ctx->{handle}{fh}" };
+}
 
-# Drop connection on any protocol violation
 sub _protocol_error {
-    my ($hdl, $reason) = @_;
-    my $src = $hdl->{socket_path} // '<unknown>';
-    warn "[$src] protocol error: $reason - closing socket\n";
-    $hdl->destroy;
+    my ($h, $why) = @_;
+    my $ctx = $h->{ctx} || {};
+    my $src = $ctx->{socket_path} // '<unknown>';
+    warn "[$src] protocol error: $why\n";
+    _detach_client($ctx, 1, 'protocol');
+    $h->destroy;
 }
 
-# STEP 1 – verify literal “START”
+#––– STEP 1 – expect "START"
 sub _handle_start {
-    my ($hdl, $data) = @_;
-    return _protocol_error($hdl, "expected 'START'") unless $data eq 'START';
-
-    print "[START] - yep!\n";
-    # Read TAG next (4 bytes)
-    $hdl->push_read( chunk => 4, \&_handle_tag );
+    my ($h, $data) = @_;
+    return _protocol_error($h, "expected START") unless $data eq 'START';
+    $h->push_read( chunk => 4, \&_handle_tag );
 }
 
-# STEP 2 – store TAG
+#––– STEP 2 – TAG (4 B)
 sub _handle_tag {
-    my ($hdl, $tag) = @_;
-    $hdl->{_proto}->{tag} = $tag;
+    my ($h, $tag) = @_;
+    $tag = uc $tag;
+    $h->{ctx}{proto}{tag} = $tag;
+    print STDERR "Incoming TAG of [$tag].\n";
 
-    print "[TAG] [$tag] - yep!\n";
-    if (  uc($tag) eq 'DONE'  ) {
-        $hdl->push_write("DONE\n");
-        $hdl->push_shutdown;          # graceful half-close
-        $hdl->on_drain( sub { shift->destroy } );
-        return;
-    }
-    # First LEN byte (1 byte)
-    $hdl->push_read( chunk => 1, \&_handle_len );
+    return _handle_stop($h) if $tag eq 'STOP';
+    $h->push_read( chunk => 1, \&_handle_len );
 }
 
-# STEP 3 – read LEN
+#––– STEP 3 – LEN / DATA loop
 sub _handle_len {
-    my ($hdl, $len_byte) = @_;
-    my $len = unpack 'C', $len_byte;   # unsigned char 0-255
+    my ($h, $len_raw) = @_;
+    my $len = unpack 'C', $len_raw;
 
-    print "[LEN] == [$len] = waiting bytes...\n";
-    if ($len == 0) {
-        # Expect literal “STOP” afterwards
-        $hdl->push_read( chunk => 4, \&_handle_tag );
+    return _protocol_error($h, 'LEN exceeds rbuf_max')
+        if $len > $h->{rbuf_max};
+
+    if ($len == 0) {                        # terminator
+        $h->push_read( chunk => 4, \&_handle_tag );
         return;
     }
 
-    # Sanity-check LEN against rbuf_max (defensive)
-    return _protocol_error($hdl, "LEN $len exceeds rbuf_max")
-        if $len > $hdl->{rbuf_max};
-
-    # Read DATA of $len bytes
-    $hdl->push_read( chunk => $len, sub {
-        my ($hdl2, $binary) = @_;
-        push @{ $hdl2->{_proto}->{blobs} }, $binary;
-
-        # Loop back: expect next LEN
-        $hdl2->push_read( chunk => 1, \&_handle_len );
+    $h->push_read( chunk => $len, sub {
+        my ($h, $blob) = @_;
+        push @{ $h->{ctx}{proto}{blobs} }, $blob;
+        $h->push_read( chunk => 1, \&_handle_len );
     });
 }
 
-# STEP 4 – verify literal “STOP”, send ACK, and finish
+#––– STEP 4 – STOP + ACK
 sub _handle_stop {
-    my ($hdl, $data) = @_;
-    return _protocol_error($hdl, "expected 'STOP'") unless $data eq 'STOP';
+    my ($h) = @_;
+    my $ctx = $h->{ctx} || {};
+    my $tag = $ctx->{proto}{tag}   // '';
+    my $cnt = @{ $ctx->{proto}{blobs} };
+    my $sz  = 0;  $sz += length for @{ $ctx->{proto}{blobs} };
 
-    # Successful termination – you can now do something with the data
-    my $src  = $hdl->{socket_path}        // '<unknown>';
-    my $tag  = $hdl->{_proto}->{tag}      // '<undef>';
-    my $cnt  = scalar @{ $hdl->{_proto}->{blobs} };
-    my $size = 0; $size += length $_ for @{ $hdl->{_proto}->{blobs} };
+    print "[$ctx->{socket_path}] TAG=$tag, blobs=$cnt, bytes=$sz\n";
 
-    print "[$src] Received TAG=$tag, $cnt blob(s), total $size byte(s)\n";
-
-    # Acknowledge the client and close once all data were sent
-    $hdl->push_write("OK\n");
-    $hdl->push_read( chunk => 4, \&_handle_tag );
-    #$hdl->push_shutdown;          # graceful half-close
-    #$hdl->on_drain( sub { shift->destroy } );
+    $h->push_write("OK\n");
+    $h->on_drain(sub {
+        _detach_client($ctx, 0, 'bye');
+        shift->destroy;
+    });
+    $h->push_shutdown;
 }
 
-#######################################################################
-# Legacy line-echo handler (unused by new protocol, kept for completeness)
-#######################################################################
-sub _handle_one_line {
-    my ($hdl, $line) = @_;
-    chomp $line;
-    my $src = $hdl->{socket_path} // '<unknown>';
-    print "[$src] == $line ==\n";
-
-    $hdl->push_write("woof: $line\n");
-    $hdl->push_read( line => \&_handle_one_line );
-}
-
-1;  # End of ev_socket.pm
+1;
+__END__
 

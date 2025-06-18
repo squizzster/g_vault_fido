@@ -49,7 +49,7 @@ AnyEvent->condvar->recv;
 END {
     # Cleanup code here,
     ev_signal::stop($g); ## example of good clean-up! (start / stop);
-    print "Cleaning up before exit...\n";
+    print "Cleaning up before exit...\n\n\n\n\n\n\n\n\n\n\n\n\n";
     print ( dump $g);
     print "\nClean exit. (well it will be at some point).\n";
 }

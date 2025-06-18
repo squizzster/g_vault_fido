@@ -11,7 +11,7 @@ use Crypt::Digest::BLAKE2b_512       qw(blake2b_512);
 use Carp qw(croak);
 
 use constant {
-    MASTER_SECRET_LEN           => 512,
+    MASTER_SECRET_LEN           => 32,
     DYNAMIC_SALT_LEN            => 64,
     MAC_OUTPUT_LEN              => 16,
     PEPPER_LEN                  => 32,
