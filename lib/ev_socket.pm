@@ -7,7 +7,7 @@ package ev_socket;
 #    • "START"  (5 B)
 #    • TAG      (4 B, arbitrary ASCII, upper-cased by server)
 #    • zero-or-more repetitions of
-#        ◦ LEN  (1 B, 0-255)
+#        ◦ LEN  (2 B, big-endian, 0–4096)
 #        ◦ DATA (LEN B)
 #    • LEN == 0 → terminator, then
 #    • "STOP"   (4 B)
@@ -31,7 +31,6 @@ package ev_socket;
 ###############################################################################
 use strict;
 use warnings;
-
 use AnyEvent                  qw();
 use AnyEvent::Handle          qw();
 use IO::Socket::UNIX          qw();
@@ -39,9 +38,11 @@ use Socket                    qw(SOMAXCONN);
 use Scalar::Util              qw(weaken);
 use Carp                      qw(croak);
 use Data::Dump                qw(dump);
+use Data::Dumper              qw(Dumper);
 use make_unix_socket;
 use get_peer_cred;
 use gv_dir;
+use hex;
 
 our $VERSION = '0.3';
 
@@ -108,8 +109,8 @@ sub _add {
 
             my $h = AnyEvent::Handle->new(
                 fh        => $client,
-                rbuf_max  => 4 * 1024,
-                wbuf_max  => 4 * 1024,
+                rbuf_max  => 8 * 1024,
+                wbuf_max  => 8 * 1024,
                 timeout   => 10,
                 on_error  => \&_eof_error,
                 on_eof    => \&_eof_error,
@@ -185,6 +186,7 @@ sub _detach_client {
     my $pid = $ctx->{creds}->{pid};
     warn "|| CLIENT_CLOSED  || pid=$pid || src=$src || is_error=$is_error || why=$why ||\n";
     delete $ctx->{parent}{clients}{ "$ctx->{handle}{fh}" };
+    test_decrypt();
 }
 
 sub _protocol_error {
@@ -206,31 +208,60 @@ sub _handle_start {
 #––– STEP 2 – TAG (4 B)
 sub _handle_tag {
     my ($h, $tag) = @_;
+
+    my $ctx = $h->{ctx};
+
+    ## Reset:
+    undef $ctx->{proto}{blobs};
+    undef $ctx->{proto}{tag};
+
     $tag = uc $tag;
-    $h->{ctx}{proto}{tag} = $tag;
+    $ctx->{proto}{tag} = $tag;
+
     print STDERR "Incoming TAG of [$tag].\n";
 
-    return _handle_stop($h) if $tag eq 'STOP';
-    $h->push_read( chunk => 1, \&_handle_len );
+    return _handle_stop($h) if $tag eq 'STOP'; # RETURN HERE as this is STREAM_FINISH!
+
+     _begin_ring ($h) if $tag eq 'RING';
+    $h->push_read( chunk => 2, \&_handle_len );
 }
+
+sub _begin_ring {
+    my ($h) = @_;
+    my $ctx = $h->{ctx};
+    $ctx->{loader} = gv_l->new;
+}
+
 
 #––– STEP 3 – LEN / DATA loop
 sub _handle_len {
     my ($h, $len_raw) = @_;
-    my $len = unpack 'C', $len_raw;
+    my $len = unpack 'n', $len_raw;
 
     return _protocol_error($h, 'LEN exceeds rbuf_max')
         if $len > $h->{rbuf_max};
 
     if ($len == 0) {                        # terminator
+        # this should be another function, handle_finsh_null or something
+        my $tag;
+        $tag = $h->{ctx}{proto}{tag} if defined $h->{ctx}{proto}{tag};
+        if ( defined $tag ) {
+            ## so we are finishing with a \000\000 double zero and we have a tag
+            $h->{ctx}->{loader}->_stop;
+            undef $h->{ctx}{proto}{tag}; ## we already do this elsewhere but can't hurt here to be clear.
+        }
         $h->push_read( chunk => 4, \&_handle_tag );
         return;
     }
 
     $h->push_read( chunk => $len, sub {
         my ($h, $blob) = @_;
-        push @{ $h->{ctx}{proto}{blobs} }, $blob;
-        $h->push_read( chunk => 1, \&_handle_len );
+        if ( defined $h->{ctx}{proto}{tag} and $h->{ctx}{proto}{tag} eq 'RING' ) {
+            ## We are loading a ring.
+            my $ctx = $h->{ctx};
+            return _protocol_error($h, "protocol error") unless my $ok  = $ctx->{loader}->_line_in($blob);
+        }
+        $h->push_read( chunk => 2, \&_handle_len );
     });
 }
 
@@ -239,7 +270,7 @@ sub _handle_stop {
     my ($h) = @_;
     my $ctx = $h->{ctx} || {};
     my $tag = $ctx->{proto}{tag}   // '';
-    my $cnt = @{ $ctx->{proto}{blobs} };
+    my $cnt = @{ $ctx->{proto}{blobs} // [] };
     my $sz  = 0;  $sz += length for @{ $ctx->{proto}{blobs} };
 
     print "[$ctx->{socket_path}] TAG=$tag, blobs=$cnt, bytes=$sz\n";
@@ -251,6 +282,19 @@ sub _handle_stop {
     });
     $h->push_shutdown;
 }
+
+sub test_decrypt {
+    my ($xout,$xerr) = gv_d::decrypt({
+        cipher_text => hex::decode('623936313362353937373366343137656364373234363337366232666438393936656130386437663665613366343837623832376661663661386432333030393b40e0987d6dd75f222dfedfd7caf0402d19f86aca0a131bc3854105c3727e03fea25112e98a4be56399536069d1d4787d90a3bdf1cf46f93382a1a69404ee26efc5a791f7c4d47531ff9f7306e1738a4adf79db8125a300655332e9591f304d6a49da43299e4c6eb83aa79f64ff5c07865e24cfe8593038189b7634bf75b434ddc2992337b6aca18ac09c1024f665cccd6e0226e04bbe6dcbee69d00d98bc41faf65de957987154f5b1c47228aa8f9ae0b9c18f4d7bc23e822b1cda8d5a58073519ca919a7d24077362847f59b8a2d96154c75fabb68900b38128e2c52239aa129f545779b33e1f7b54885922a68ba9c09b5f498c926a01f04bbb487e9184699dcf8f2477553a62c674cdfac5d36c038f8520625ba812ce658409b4083513fcbe6df0c09d06fa7c5d8fa4b9e2698be7c8d2eeb582a6a81052f8e16fb409da1b8b17a6ca68e758c1c3d156392697a08c11e2a3dc3e78f17017003549d3f5c9d7c1f02efbf3'),
+        pepper      => '12345678' x 4,
+        aad         => 'woof',
+    });
+    warn $xout if defined $xout;
+    warn $xerr if defined $xerr;
+
+}
+
+
 
 1;
 __END__
