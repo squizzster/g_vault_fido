@@ -26,7 +26,7 @@ use Scalar::Util              qw(weaken);
 #--------------------------------------------------------------------#
 # Global cache : { name_hash_hex → $ring_hash }
 #--------------------------------------------------------------------#
-my $CACHED_RING = {};
+my $CR7 = {};
 
 #--------------------------------------------------------------------#
 # Constructor – transient loader
@@ -61,7 +61,7 @@ sub _line_in {
     #–– header lines ––#
     if ( $self->{lineno} == 1 ) {
         $self->{name_hash_hex} = $line;
-        if ( $CACHED_RING->{$line} ) {
+        if ( $CR7->{$line} ) {
             warn "CANNOT ERASE A KEY!\n";
             %$self = ();
             return;
@@ -164,7 +164,7 @@ sub _stop {
         nodes      => \@nodes,
         name_hash  => $self->{name_hash_hex},
     };
-    $CACHED_RING->{ $self->{name_hash_hex} } = $ring;
+    $CR7->{ "$self->{name_hash_hex}" } = $ring;
 
     #—— secure wipe loader ——#
     $self->{closures} = $self->{next_ref} = $self->{next_iv_ref} = [];
@@ -187,7 +187,8 @@ sub _stop {
 #--------------------------------------------------------------------#
 sub get_cached_ring {
     my ($hash) = @_;
-    return $CACHED_RING->{$hash};
+    return if not defined $hash or not defined $CR7->{$hash};
+    return $CR7->{$hash};
 }
 
 1;  # end of gv_l
