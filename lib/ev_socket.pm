@@ -303,7 +303,7 @@ sub test_decrypt {
         key_name  => 'memory',
         aad       => 'woof',
     });
-    warn "I got [" . length($enc) . "] length of encrypted data.\n";
+    warn "I got [" . length($enc) . "] length of encrypted data.\n" if defined $enc;
     my ($ok, $err) = gv_d::decrypt({ cipher_text => $enc, pepper  => '1' x 32,  aad => 'woof',});
     $ok = decode_utf8($ok) unless not defined $ok and is_utf8($ok);
     warn "$ok" if defined $ok;

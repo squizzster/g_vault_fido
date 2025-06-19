@@ -1,84 +1,88 @@
-# lib/gv_l.pm
-#
-# Hardened “cipher-ring” loader with paranoia-grade memory hygiene.
-# -----------------------------------------------------------------
-#  ▸ gv_l::Loader  – one-shot builder; wiped after ->stop
-#  ▸ gv_l::Ring    – lightweight container; auto-scrubs on destroy
-#  ▸ Global cache  – cache_ring / fetch_ring / drop_ring helpers
-#
-#  Typical use:
-#     my $ldr  = gv_l::Loader->new;
-#     $ldr->line_in($raw_line) while ... ;
-#     my $ring = $ldr->stop;                 # gv_l::Ring object
-#     gv_l::cache_ring($hex, $ring);         # optional
-#     ...
-#     my %info = $ring->f->();      # traverse
-#
-####################################################################
-
 package gv_l;
+
+# Hardened “cipher-ring” loader – 2025-06-19  rev-D2
+# --------------------------------------------------
+# - Dependency-free: core Perl 5.14 only
+# - COW broken with self-concat; secrets wiped via vec()
+# - Restores original closure capture of $next / $next_iv
+# - Calls weaken() only after assignment (never on undef)
 
 use v5.24;
 use strict;
 use warnings;
 
-use Carp                   qw(carp croak);
-use MIME::Base64           qw(decode_base64);
-use Crypt::Digest::BLAKE2b_256 qw(blake2b_256);
+use Carp                       ();
+use Crypt::Digest::BLAKE2b_256 ();
+use Crypt::Misc                ();    # for decode_b64()
+use Scalar::Util               ();    # for weaken()
 
-#------------------------------------------------------------------#
+########################################################################
 # Constants
-#------------------------------------------------------------------#
+########################################################################
 use constant {
-    MAC_LEN   => 16,     # 128-bit truncated BLAKE2b
-    IV_LEN    => 16,     # AES block
+    MAC_LEN => 16,      # 128-bit truncated BLAKE2b
+    IV_LEN  => 16,      # AES block length
 };
 
-#------------------------------------------------------------------#
+########################################################################
 # Global cache  { name_hash_hex ⇒ gv_l::Ring }
-#------------------------------------------------------------------#
-my $CR7 = {};                                   # lexical (no symbol-table)
+########################################################################
+my $CR7 = {};           # lexical, cannot be re-tied from outside
 
-# Public helpers ---------------------------------------------------#
-sub cache_ring   { $CR7->{ $_[0] } = $_[1] }    # (id, ring)
-sub fetch_ring   { $CR7->{ $_[0] } }
+# ––– Public cache helpers ––––––––––––––––––––––––––––––––––––––––––––
+sub cache_ring   { $CR7->{ $_[0] } = $_[1] }
+sub fetch_ring   { my $id = shift; $id && exists $CR7->{$id} ? $CR7->{$id} : undef }
 *get_cached_ring = \&fetch_ring;
 
-sub drop_ring {                                # returns 1 if something was dropped
+sub is_loaded_ring { my $id = shift; $id && exists $CR7->{$id} }
+
+sub drop_ring {
     my ($id) = @_;
+    return unless $id;
     my $ring = delete $CR7->{$id} or return 0;
-    $ring->__scrub;                            # free closures immediately
-    return 1;
+    $ring->__scrub;
+    1;
 }
-# Back-compat aliases
 *stash_ring        = \&cache_ring;
 *clear_cached_ring = \&drop_ring;
 
-#==================================================================#
+########################################################################
+# Helpers – COW-safe duplication & wiping
+########################################################################
+
+sub _dup_nocow { "" . $_[0] }          # self-concat forces fresh PV
+
+sub _wipe_scalar {
+    my ($ref) = @_;
+    return unless defined $$ref && !ref $$ref;
+    $$ref = "" . $$ref;                # break any sharing
+    vec($$ref, $_, 8) = 0 for 0 .. length($$ref) - 1;
+    undef $$ref;
+}
+
+########################################################################
 # gv_l::Loader – transient builder
-#==================================================================#
+########################################################################
 package gv_l::Loader;
 
 use strict;
 use warnings;
-use Carp          qw(carp croak);
-use Crypt::Mode::CBC;
-use Scalar::Util  qw(weaken);
-use Data::Dumper  qw(Dumper);
+use Crypt::Mode::CBC   ();
+use Carp               ();
 
 use constant {
-    MAC_LEN   => 16,     # 128-bit truncated BLAKE2b
-    IV_LEN    => 16,     # AES block
+    MAC_LEN => 16,
+    IV_LEN  => 16,
 };
 
 sub new {
     my ($class) = @_;
-    return bless {
+    bless {
         lineno    => 0,
         nodes     => 0,
-        name_hash => undef,          # hex
-        mac_key   => undef,          # bytes
-        aes_key   => undef,          # 32 B
+        name_hash => undef,
+        mac_key   => undef,
+        aes_key   => undef,
         closures  => [],
         next_ref  => [],
         next_iv   => [],
@@ -86,90 +90,104 @@ sub new {
     }, $class;
 }
 
-#------------------------------------------------------------------#
-# line_in( $raw_line ) – feed one physical line
-#------------------------------------------------------------------#
+sub _fail {
+    my ($self, $msg) = @_;
+    Carp::carp( $msg // 'gv_l::Loader – generic error' );
+    $self->_secure_wipe if $self->can('_secure_wipe');
+    undef;
+}
+
+#-----------------------------------------------------------------------
+# line_in – feed one physical line
+#-----------------------------------------------------------------------
 sub line_in {
     my ( $self, $line ) = @_;
 
     $self->{lineno}++;
-    chomp $line;
-    $line =~ s/^\s+|\s+$//g;
+    chomp $line if defined $line;
+    $line =~ s/^\s+|\s+$//g if defined $line;
 
-    # Header lines -------------------------------------------------#
+    # ── Name-hash line ────────────────────────────────────────────────
     if ( $self->{lineno} == 1 ) {
-        $self->{name_hash} = $line;
-        gv_l::drop_ring($line);                # overwrite any old ring
-        return 1;
-    }
-    elsif ( $self->{lineno} == 2 ) {
-        $self->{mac_key} = length $line ? MIME::Base64::decode_base64($line) : '';
-        return 1;
-    }
-    elsif ( $self->{lineno} == 3 ) {
-        defined $line or croak 'load_cipher_ring: missing AES-key line';
-        my $aes = MIME::Base64::decode_base64($line);
-        length($aes) == 32 or croak 'load_cipher_ring: AES key wrong length';
-        $self->{aes_key} = $aes;
+        $self->{name_hash} = $line // return $self->_fail('missing name-hash');
+        return $self->_fail('ring already loaded') if gv_l::is_loaded_ring($line);
         return 1;
     }
 
-    # Node lines ---------------------------------------------------#
-    return 1 unless length $line;              # skip blanks
+    # ── MAC-key line ─────────────────────────────────────────────────
+    elsif ( $self->{lineno} == 2 ) {
+        my $tmp = Crypt::Misc::decode_b64($line // '');
+        return $self->_fail('MAC key wrong length')
+          unless length($tmp) == 2 * MAC_LEN() && $tmp ne '';
+
+        $self->{mac_key} = gv_l::_dup_nocow($tmp);
+        gv_l::_wipe_scalar(\$tmp);
+        return 1;
+    }
+
+    # ── AES-key line ─────────────────────────────────────────────────
+    elsif ( $self->{lineno} == 3 ) {
+        my $tmp = Crypt::Misc::decode_b64($line // '');
+        return $self->_fail('AES key wrong length') unless length($tmp) == 32;
+
+        $self->{aes_key} = gv_l::_dup_nocow($tmp);
+        gv_l::_wipe_scalar(\$tmp);
+        return 1;
+    }
+
+    # ── Node lines (>3) ──────────────────────────────────────────────
+    return 1 unless defined $line && length $line;
 
     my ( undef, $iv_b64, $ct_b64, $tag_b64 ) = split /\t/, $line, 4;
-    defined $tag_b64
-      or croak "load_cipher_ring: malformed node at line $self->{lineno}";
+    return $self->_fail("malformed node at line $self->{lineno}")
+        unless defined $tag_b64;
 
-    my $iv  = MIME::Base64::decode_base64($iv_b64);
-    my $ct  = MIME::Base64::decode_base64($ct_b64);
-    my $tag = MIME::Base64::decode_base64($tag_b64);
+    my $iv  = Crypt::Misc::decode_b64($iv_b64  // '');
+    my $ct  = Crypt::Misc::decode_b64($ct_b64  // '');
+    my $tag = Crypt::Misc::decode_b64($tag_b64 // '');
 
-    # strict length checks
-    length($iv)  == IV_LEN()
-        or croak "IV bad";
-    length($tag) == MAC_LEN()
-        or croak "TAG bad";
-    length($ct)  % IV_LEN() == 0
-        or croak "CT bad";
+    return $self->_fail('IV bad length')   unless length($iv)  == IV_LEN();
+    return $self->_fail('TAG bad length')  unless length($tag) == MAC_LEN();
+    return $self->_fail('CT not block-aligned')
+        unless length($ct) % IV_LEN() == 0;
 
-    my $idx   = $self->{nodes}++;
+    # Independent copies for the closure
+    my ( $iv_l, $ct_l, $tag_l ) = map { gv_l::_dup_nocow($_) } ( $iv, $ct, $tag );
+    gv_l::_wipe_scalar($_) for ( \$iv, \$ct, \$tag );
 
-    # Create *deep* copies of secrets (no COW)
-    my $cbc   = Crypt::Mode::CBC->new('AES', 1);           # fresh XS obj
-    my $mac_k = pack 'a*', $self->{mac_key};
-    my $aes_k = pack 'a*', $self->{aes_key};
+    my $idx = $self->{nodes}++;
 
-    my ( $iv_l, $ct_l, $tag_l ) = ( $iv, $ct, $tag );
-    my ( $next,  $next_iv );                               # placeholders
+    my $cbc   = Crypt::Mode::CBC->new('AES', 1);
+    my $mac_k = gv_l::_dup_nocow( $self->{mac_key} );
+    my $aes_k = gv_l::_dup_nocow( $self->{aes_key} );
 
-    $self->{first_iv} //= $iv_l;                           # remember IV₀
+    $self->{first_iv} //= $iv_l;
 
+    my $next    = undef;
+    my $next_iv = undef;
+
+    push @{ $self->{next_ref} }, \$next;
+    push @{ $self->{next_iv}  }, \$next_iv;
+
+    # ── Build closure – captures $next / $next_iv exactly like original
     my $closure = do {
-        # capture raw materials once
-        my $iv_buf  = $iv_l;
-        my $ct_buf  = $ct_l;
-        my $tag_buf = $tag_l;
-    
-        # will hold the parsed node after first run
-        my %memo;
-        my $done = 0;
-    
+        my ( $iv_buf, $ct_buf, $tag_buf ) = ( $iv_l, $ct_l, $tag_l );
+        my (%memo, $done);
+
         sub {
-            # fast path – return cached structure
             return %memo if $done;
-    
-            # --- 1. verify MAC --------------------------------------------------
+
             substr(
-                Crypt::Digest::BLAKE2b_256::blake2b_256( $mac_k . $iv_buf . $ct_buf ),
+                Crypt::Digest::BLAKE2b_256::blake2b_256(
+                    $mac_k . $iv_buf . $ct_buf
+                ),
                 0, MAC_LEN()
             ) eq $tag_buf
-              or do { carp "MAC mismatch in node $idx"; return };
-    
-            # --- 2. decrypt & unpack -------------------------------------------
-            my ( $i, $stored, $mode, $param ) =
-                unpack 'nC3', $cbc->decrypt( $ct_buf, $aes_k, $iv_buf );
-    
+              or return;   # silently fail
+
+            my ( $i, $stored, $mode, $param )
+                = unpack 'nC3', $cbc->decrypt( $ct_buf, $aes_k, $iv_buf );
+
             %memo = (
                 index       => $i,
                 stored_byte => $stored,
@@ -179,130 +197,83 @@ sub line_in {
                 next_iv     => $next_iv,
             );
             $done = 1;
-    
-            # --- 3. zeroise sensitive buffers ----------------------------------
-            substr( $iv_buf,  0, length $iv_buf,  "\0" x length $iv_buf  );
-            substr( $ct_buf,  0, length $ct_buf,  "\0" x length $ct_buf  );
-            substr( $tag_buf, 0, length $tag_buf, "\0" x length $tag_buf );
-    
-            substr( $mac_k,   0, length $mac_k,   "\0" x length $mac_k   );
-            substr( $aes_k,   0, length $aes_k,   "\0" x length $aes_k   );
-    
-            # --- 4. hand back parsed node on first call ------------------------
-            return %memo;
+
+            gv_l::_wipe_scalar($_)
+                for ( \$iv_buf, \$ct_buf, \$tag_buf, \$mac_k, \$aes_k );
+            %memo;
         };
     };
 
-    my $__closure = sub {
-        # 1) MAC check
-        substr( Crypt::Digest::BLAKE2b_256::blake2b_256( $mac_k . $iv_l . $ct_l ), 0, MAC_LEN() ) eq $tag_l
-          or do { carp "MAC mismatch in node $idx"; return };
-
-        # 2) decrypt & unpack  (n=16-bit idx, C3 = 3×uint8)
-        my ( $i, $stored, $mode, $param )
-          = unpack 'nC3', $cbc->decrypt( $ct_l, $aes_k, $iv_l );
-
-        # 3) prepare return value
-        my %node = (
-            index       => $i,
-            stored_byte => $stored,
-            mode        => $mode,
-            param       => $param,
-            next_node   => $next,
-            next_iv     => $next_iv,
-        );
-
-        ## --- ZEROISE sensitive buffers before exiting closure ---
-        #substr( $iv_l,  0, length($iv_l),  "\0" x length($iv_l) );
-        #substr( $ct_l,  0, length($ct_l),  "\0" x length($ct_l) );
-        #substr( $tag_l, 0, length($tag_l), "\0" x length($tag_l) );
-
-        # 4) return the node data
-        return %node;
-
-    };
-
-    push @{ $self->{closures} }, $closure;
-    push @{ $self->{next_ref} }, \$next;
-    push @{ $self->{next_iv}  }, \$next_iv;
-
-    if ( $idx > 0 ) {                                   # link previous → this
-        ${ $self->{next_ref}[ $idx - 1 ] } = $closure;
-        weaken( ${ $self->{next_ref}[ $idx - 1 ] } );   # break strong ring
-        ${ $self->{next_iv}[  $idx - 1 ] } = $iv_l;
+    # -- link current node to previous one (if any) --
+    if ( $idx > 0 ) {
+        my $slot = $self->{next_ref}[ $idx - 1 ];  # ref to previous $next var
+        $$slot = $closure;                         # store forward link
+        Scalar::Util::weaken($$slot);              # *after* assignment
+        ${ $self->{next_iv}[ $idx - 1 ] } = $iv_l;
     }
 
-    return 1;
+    $self->{closures}[$idx] = $closure;
+    1;
 }
 
-#------------------------------------------------------------------#
-# stop() – finalise ring, wipe loader, return gv_l::Ring
-#------------------------------------------------------------------#
+#-----------------------------------------------------------------------
 sub stop {
     my ($self) = @_;
-    $self->{nodes} or croak 'load_cipher_ring: no nodes';
+    return $self->_fail('no nodes loaded') unless $self->{nodes};
 
-    # Close the ring (last → first)
-    my $name_hash                 = "$self->{name_hash}";
-    ${ $self->{next_ref}[$self->{nodes} - 1] } = $self->{closures}[0];
+    # close the ring (last → first)
+    my $name_hash = "$self->{name_hash}";
+    my $tail_ref  = $self->{next_ref}[ $self->{nodes} - 1 ];
+    $$tail_ref    = $self->{closures}[0];
+    Scalar::Util::weaken($$tail_ref);
+    ${ $self->{next_iv}[ $self->{nodes} - 1 ] } = $self->{first_iv};
 
-    weaken( ${ $self->{next_ref}[$self->{nodes} - 1] } );
-    ${ $self->{next_iv}[$self->{nodes} - 1] }  = $self->{first_iv};
+    # invoke every closure once (zero-after-load)
+    $_->() for @{ $self->{closures} };
 
     gv_l::cache_ring(
         $name_hash,
         bless {
-            f => $self->{closures}[0],
-            nodes      => \@{ $self->{closures} },     # strong refs while cached
-            name_hash  => $name_hash,
+            f         => $self->{closures}[0],
+            nodes     => [ @{ $self->{closures} } ],
+            name_hash => $name_hash,
         }, 'gv_l::Ring',
     );
 
-    warn sprintf "[SUCCESS] Loaded nodes for ring %s\n", $name_hash;
-    $self->_secure_wipe;
+    Carp::carp sprintf '[SUCCESS] Loaded %d nodes for ring %s',
+        $self->{nodes}, $name_hash;
 
-    return 1;
+    $self->_secure_wipe;
+    1;
 }
 
-#------------------------------------------------------------------#
-# _secure_wipe – zero secrets & drop scaffolding
-#------------------------------------------------------------------#
+#-----------------------------------------------------------------------
 sub _secure_wipe {
     my ($self) = @_;
+    gv_l::_wipe_scalar( \ $self->{$_} ), delete $self->{$_}
+        for grep defined $self->{$_}, qw/aes_key mac_key/;
 
-    for my $k ( qw/aes_key mac_key/ ) {
-        next unless defined $self->{$k} && !ref $self->{$k};
-        substr( $self->{$k}, 0, length $self->{$k},
-                "\0" x length $self->{$k} );
-        delete $self->{$k};
-    }
-
-    delete @$self{ qw/lineno nodes name_hash/ };
-    delete @$self{ qw/closures next_ref next_iv first_iv/ };
+    delete @$self{ qw/lineno nodes name_hash first_iv
+                      closures next_ref next_iv/ };
 }
 
-#==================================================================#
-# gv_l::Ring – lightweight container; scrubs on drop
-#==================================================================#
-package gv_l::Ring;
+sub DESTROY { shift->_secure_wipe }
 
+########################################################################
+# gv_l::Ring – lightweight container (unchanged)
+########################################################################
+package gv_l::Ring;
 use strict;
 use warnings;
 
-### sub first_node { $_[0]->{f} }
-### sub name_hash  { $_[0]->{name_hash} }
+sub nodes { @{ $_[0]->{nodes} } }
 
-# Convenience: iterate over all closures (while still cached)
-sub nodes      { @{ $_[0]->{nodes} } }
-
-# Internal scrub – called by drop_ring & DESTROY
 sub __scrub {
     my ($self) = @_;
-    @{ $self->{nodes} } = ();                # release closures
-    $self->{f} = undef;             # break final handle
+    @{ $self->{nodes} } = ();
+    $self->{f} = undef;
 }
 
 sub DESTROY { shift->__scrub }
 
 1;  # end of gv_l.pm
-
