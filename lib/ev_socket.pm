@@ -39,6 +39,7 @@ use Scalar::Util              qw(weaken);
 use Carp                      qw(croak);
 use Data::Dump                qw(dump);
 use Data::Dumper              qw(Dumper);
+use Encode                    qw(decode_utf8 is_utf8);
 use make_unix_socket;
 use get_peer_cred;
 use gv_dir;
@@ -289,18 +290,21 @@ sub test_decrypt {
         pepper      => '12345678' x 4,
         aad         => 'woof',
     });
+    $xout = decode_utf8($xout) unless not defined $xout and is_utf8($xout);
     warn $xout if defined $xout;
     warn $xerr if defined $xerr;
 
     my ($enc) = gv_e::encrypt({
-        plaintext => "hello, how are you?",
+        plaintext => "hello, how are you? 👋🙂🫵❓",
         pepper    => '1' x 32,
         key_name  => 'memory',
         aad       => 'woof',
     });
     warn "I got [" . length($enc) . "] length of encrypted data.\n";
-    my ($ok) = gv_d::decrypt({ cipher_text => $enc, pepper  => '1' x 32,  aad => 'woof',});
-    warn "$ok";
+    my ($ok, $err) = gv_d::decrypt({ cipher_text => $enc, pepper  => '1' x 32,  aad => 'woof',});
+    $ok = decode_utf8($ok) unless not defined $ok and is_utf8($ok);
+    warn "$ok" if defined $ok;
+    warn "$err" if defined $err;
 }
 
 1;
