@@ -47,6 +47,13 @@ use hex;
 
 our $VERSION = '0.3';
 
+use constant {
+    CUR_RING_LINES  => 35, 
+    MAX_TOTAL_LINES => 500, 
+    MAX_LINE_LEN    => 1024,
+};
+
+
 ###############################################################################
 # add( $g, %opts ) – register a new listening socket
 ###############################################################################
@@ -187,7 +194,7 @@ sub _detach_client {
     my $pid = $ctx->{creds}->{pid};
     warn "|| CLIENT_CLOSED  || pid=$pid || src=$src || is_error=$is_error || why=$why ||\n";
     delete $ctx->{parent}{clients}{ "$ctx->{handle}{fh}" };
-    test_decrypt();
+    dev_test_decrypt();
 }
 
 sub _protocol_error {
@@ -233,14 +240,15 @@ sub _begin_ring {
     $ctx->{loader} = gv_l::Loader->new; ## $ctx->{loader} = gv_l->new;
 }
 
-
 #––– STEP 3 – LEN / DATA loop
 sub _handle_len {
     my ($h, $len_raw) = @_;
     my $len = unpack 'n', $len_raw;
 
-    return _protocol_error($h, 'LEN exceeds rbuf_max')
-        if $len > $h->{rbuf_max};
+    return _protocol_error($h, 'LEN exceeds rbuf_max') if $len > MAX_LINE_LEN;
+
+    $h->{ctx}->{basic_deny_service}++;
+    return _protocol_error($h, "service deny") if $h->{ctx}->{basic_deny_service} > MAX_TOTAL_LINES; # acceptable
 
     if ($len == 0) {                        # terminator
         # this should be another function, handle_finsh_null or something
@@ -249,7 +257,6 @@ sub _handle_len {
         if ( defined $tag ) {
             ## so we are finishing with a \000\000 double zero and we have a tag
             $h->{ctx}->{loader}->stop;
-            ### $h->{ctx}->{loader}->_stop;
             undef $h->{ctx}{proto}{tag}; ## we already do this elsewhere but can't hurt here to be clear.
         }
         $h->push_read( chunk => 4, \&_handle_tag );
@@ -260,10 +267,7 @@ sub _handle_len {
         my ($h, $blob) = @_;
         if ( defined $h->{ctx}{proto}{tag} and $h->{ctx}{proto}{tag} eq 'RING' ) {
             ## We are loading a ring.
-            my $ctx = $h->{ctx};
-            return _protocol_error($h, "protocol error")
-                unless my $ok  = $ctx->{loader}->line_in($blob);
-            ###return _protocol_error($h, "protocol error") unless my $ok  = $ctx->{loader}->_line_in($blob);
+            return _protocol_error($h, "protocol error") unless my $ok  = $h->{ctx}->{loader}->line_in($blob);
         }
         $h->push_read( chunk => 2, \&_handle_len );
     });
@@ -287,22 +291,23 @@ sub _handle_stop {
     $h->push_shutdown;
 }
 
-sub test_decrypt {
+sub dev_test_decrypt {
     my ($xout,$xerr) = gv_d::decrypt({
-        cipher_text => hex::decode('623936313362353937373366343137656364373234363337366232666438393936656130386437663665613366343837623832376661663661386432333030393b40e0987d6dd75f222dfedfd7caf0402d19f86aca0a131bc3854105c3727e03fea25112e98a4be56399536069d1d4787d90a3bdf1cf46f93382a1a69404ee26efc5a791f7c4d47531ff9f7306e1738a4adf79db8125a300655332e9591f304d6a49da43299e4c6eb83aa79f64ff5c07865e24cfe8593038189b7634bf75b434ddc2992337b6aca18ac09c1024f665cccd6e0226e04bbe6dcbee69d00d98bc41faf65de957987154f5b1c47228aa8f9ae0b9c18f4d7bc23e822b1cda8d5a58073519ca919a7d24077362847f59b8a2d96154c75fabb68900b38128e2c52239aa129f545779b33e1f7b54885922a68ba9c09b5f498c926a01f04bbb487e9184699dcf8f2477553a62c674cdfac5d36c038f8520625ba812ce658409b4083513fcbe6df0c09d06fa7c5d8fa4b9e2698be7c8d2eeb582a6a81052f8e16fb409da1b8b17a6ca68e758c1c3d156392697a08c11e2a3dc3e78f17017003549d3f5c9d7c1f02efbf3'),
-        pepper      => '12345678' x 4,
+        cipher_text => hex::decode('62626230366630386462636161653765306433623930613534373164343634376439336133623434386266363530636164383666663664633433653438633138b37063a3ae2faa0873e96db424ebc9ca5b4e5846a53b0f039bfd89430b444960041c0320a67f1026ff5c174748df1d2a1c9e83dcf95994b602abd0a7c632ea7f54e1b452cb74236f4425be01286a3bb04160b34cf8970744fcadf5f165ab96b783c4c513914143b5f5fe9f165d2869000fba3db9aa8bae20d37ef480bae230c0db2eea0578b30cb540b17ba8'),
+        pepper      => '1' x 32,
         aad         => 'woof',
     });
     $xout = decode_utf8($xout) unless not defined $xout and is_utf8($xout);
-    warn $xout if defined $xout;
-    warn $xerr if defined $xerr;
+    warn "PREVIOUS ===> $xout" if defined $xout;
+    warn "ERROR    ===> $xerr" if defined $xerr;
 
     my ($enc) = gv_e::encrypt({
         plaintext => "hello, how are you? 👋🙂🫵❓",
         pepper    => '1' x 32,
-        key_name  => 'memory',
+        key_name  => 'memory_2',
         aad       => 'woof',
     });
+    #warn hex::encode($enc);
     warn "I got [" . length($enc) . "] length of encrypted data.\n" if defined $enc;
     my ($ok, $err) = gv_d::decrypt({ cipher_text => $enc, pepper  => '1' x 32,  aad => 'woof',});
     $ok = decode_utf8($ok) unless not defined $ok and is_utf8($ok);
