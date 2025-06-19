@@ -293,7 +293,7 @@ sub _handle_stop {
 
 sub dev_test_decrypt {
     my ($xout,$xerr) = gv_d::decrypt({
-        cipher_text => hex::decode('62626230366630386462636161653765306433623930613534373164343634376439336133623434386266363530636164383666663664633433653438633138b37063a3ae2faa0873e96db424ebc9ca5b4e5846a53b0f039bfd89430b444960041c0320a67f1026ff5c174748df1d2a1c9e83dcf95994b602abd0a7c632ea7f54e1b452cb74236f4425be01286a3bb04160b34cf8970744fcadf5f165ab96b783c4c513914143b5f5fe9f165d2869000fba3db9aa8bae20d37ef480bae230c0db2eea0578b30cb540b17ba8'),
+        cipher_text => hex::decode('36643337653764636365633865366638633934326261616661396330323836346137386562646435326264306437303431366365343537346533646236376137c527cbd5d7780ac9f129eda0472a7bcd15063ec2c6cbb9ddc47b2d0e11f4f282e34180aceaad1b7957de566e3fd758f60ecc2941f534ba202f7db232ecf2b857beee6ca3d17ff3c8e869c13e2e5823850e4fd7e864f8f8529e5a215b2a8cdd1154ac73f85eea3da9ce6357e755fe0d47d57d91c843b08b3645f42f91957acd'),
         pepper      => '1' x 32,
         aad         => 'woof',
     });
@@ -302,16 +302,16 @@ sub dev_test_decrypt {
     warn "ERROR    ===> $xerr" if defined $xerr;
 
     my ($enc) = gv_e::encrypt({
-        plaintext => "hello, how are you? 👋🙂🫵❓",
+        plaintext => "Good BYE!, how are you? 👋🙂🫵❓",
         pepper    => '1' x 32,
-        key_name  => 'memory_2',
+        key_name  => 'default',
         aad       => 'woof',
     });
     #warn hex::encode($enc);
     warn "I got [" . length($enc) . "] length of encrypted data.\n" if defined $enc;
     my ($ok, $err) = gv_d::decrypt({ cipher_text => $enc, pepper  => '1' x 32,  aad => 'woof',});
     $ok = decode_utf8($ok) unless not defined $ok and is_utf8($ok);
-    warn "$ok" if defined $ok;
+    warn "CURRENT  ===> $ok" if defined $ok;
     warn "$err" if defined $err;
 }
 

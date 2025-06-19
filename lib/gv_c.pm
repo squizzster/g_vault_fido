@@ -40,7 +40,7 @@ my $_apply = sub {
 #----------------------------------------------------------------------#
 sub build_cipher_ring {
     my (%a) = @_;
-    my $name = $a{name} // return ( undef, 'Name required' );
+    my $name = $a{name} // 'default'; ### we now allocate a default.  return ( undef, 'Name required' );
 
     # -- master secret --------------------------------------------------
     my $master = $a{master_secret}
@@ -132,6 +132,7 @@ sub build_cipher_ring {
     return (
         {
             f => $closures[0],
+            name       => $name,
             name_hash  => $name_hash_hex,
             mac_key    => $mac_key,
             aes_key    => $aes_key,

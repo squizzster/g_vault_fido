@@ -26,8 +26,9 @@ use gv_d       ();    # decrypt
 use gv_m       ();    # decrypt
 use gv_random  ();    # crypto-graphic random bytes
 
-my $ring_name = 'memory_2';
-my $file      = '/tmp/g_vault_master_secrets_memory_20._gvr_';
+my $ring_name;
+   #$ring_name = 'memory_2';
+my $file      = '/tmp/g_vault_master_secrets_default._gvr_';
 
 # 1) build & save
 my ($ring,$err);

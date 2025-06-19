@@ -20,8 +20,8 @@ use Scalar::Util               ();    # for weaken()
 # Constants
 ########################################################################
 use constant {
-    MAC_LEN => 16,      # 128-bit truncated BLAKE2b
-    IV_LEN  => 16,      # AES block length
+    MAC_LEN         => 16,  
+    IV_LEN          => 16,
 };
 
 ########################################################################
@@ -71,8 +71,9 @@ use Crypt::Mode::CBC   ();
 use Carp               ();
 
 use constant { # Re-declare constants for this package, as in original
-    MAC_LEN => 16,
-    IV_LEN  => 16,
+    MAC_LEN        => 16,
+    IV_LEN         => 16,
+    BLAKE_NAME_TAG => pack('H*', 'ee4bcef77cb49c70f31de849dccaab24'),
 };
 
 sub new {
@@ -80,6 +81,7 @@ sub new {
     bless {
         lineno    => 0,
         nodes     => 0,
+        name      => undef,
         name_hash => undef,
         mac_key   => undef,
         aes_key   => undef,
@@ -108,9 +110,15 @@ sub line_in {
     $self->{lineno}++;
     chomp $line if defined $line;
     $line =~ s/^\s+|\s+$//g if defined $line;
+    return $self->_fail("empty line") if not defined $line or length($line) == 0;
+    # so, $line has something... (else fail)
 
     # ── Name-hash line ────────────────────────────────────────────────
-    if ( $self->{lineno} == 1 ) {
+    if ( $self->{lineno}    == 1 ) { # 1
+         $self->{name} = "$line";
+         return 1;
+    }
+    elsif ( $self->{lineno} == 2 ) { # 2
         my ($name_hash_from_file, $hash_from_file) = split /\t/, ($line // ''), 2;
         return $self->_fail('missing name-hash or its hash on line 1')
             unless defined $name_hash_from_file && defined $hash_from_file;
@@ -118,19 +126,23 @@ sub line_in {
         my $expected_hash = Crypt::Digest::BLAKE2b_256::blake2b_256_hex(
             $self->{current_blake_state} . $name_hash_from_file
         );
+
         return $self->_fail("name-hash integrity check failed on line 1") # Simplified error for brevity
             unless $expected_hash eq $hash_from_file;
 
-        $self->{name_hash} = $name_hash_from_file; # $line was already checked for definedness by split
-                                                   # and $name_hash_from_file is checked above.
+        return $self->_fail("name-check integrity fail") if 
+            $name_hash_from_file    ne 
+            Crypt::Digest::BLAKE2b_256::blake2b_256_hex( $self->{name} . BLAKE_NAME_TAG );
+
+        $self->{name_hash}           = $name_hash_from_file;
         $self->{current_blake_state} = $expected_hash; # State is now HEX STRING
 
-        return $self->_fail('ring already loaded') if gv_l::is_loaded_ring($self->{name_hash});
+        return $self->_fail('cannot replace a ring') if gv_l::is_loaded_ring($self->{name_hash}); # can't unload! should never unload.
         return 1;
     }
 
     # ── MAC-key line ─────────────────────────────────────────────────
-    elsif ( $self->{lineno} == 2 ) {
+    elsif ( $self->{lineno} == 3 ) { # 3
         my ($mac_key_b64, $hash_from_file) = split /\t/, ($line // ''), 2;
         return $self->_fail('missing MAC key b64 or its hash on line 2')
             unless defined $mac_key_b64 && defined $hash_from_file;
@@ -155,7 +167,7 @@ sub line_in {
     }
 
     # ── AES-key line ─────────────────────────────────────────────────
-    elsif ( $self->{lineno} == 3 ) {
+    elsif ( $self->{lineno} == 4 ) {
         my ($aes_key_b64, $hash_from_file) = split /\t/, ($line // ''), 2;
         return $self->_fail('missing AES key b64 or its hash on line 3')
             unless defined $aes_key_b64 && defined $hash_from_file;
@@ -179,7 +191,6 @@ sub line_in {
     }
 
     # ── Node lines (>3) ──────────────────────────────────────────────
-    return 1 unless defined $line && length $line;
 
     my ( undef, $iv_b64, $ct_b64, $tag_b64, $hash_integ ) = split /\t/, $line, 5;
     return $self->_fail("malformed node at line $self->{lineno} (expected 5 fields)")
