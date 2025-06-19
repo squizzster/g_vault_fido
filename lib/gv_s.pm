@@ -33,7 +33,7 @@ sub save_cipher_ring {
 
     # nodes ---
     my %seen;
-    my $node = $ring->{first_node};
+    my $node = $ring->{f};
     while ( $node && !$seen{ refaddr $node }++ ) {
         my %raw = $node->('raw');                                   # ← no decrypt!
         print {$fh} join( "\t",

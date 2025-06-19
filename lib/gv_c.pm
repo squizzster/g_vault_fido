@@ -131,7 +131,7 @@ sub build_cipher_ring {
     # façade – now **also** exports mac_key & aes_key for secure serialisation
     return (
         {
-            first_node => $closures[0],
+            f => $closures[0],
             name_hash  => $name_hash_hex,
             mac_key    => $mac_key,
             aes_key    => $aes_key,

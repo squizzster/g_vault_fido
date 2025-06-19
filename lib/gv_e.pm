@@ -50,7 +50,8 @@ my $_recover = sub {
     my ($ring, $salt, $pepper) = @_;
 
     # sanity checks ­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­
-    return (undef, 'bad ring')   unless ref $ring eq 'HASH';
+    print "RING IS " . (ref $ring ) . "\n";
+    return (undef, 'bad ring')   unless ( ref $ring eq 'HASH' or ref $ring eq 'gv_l::Ring' );
     return (undef, 'bad salt')   if length($salt)   != DYNAMIC_SALT_LEN;
     return (undef, 'bad pepper') if length($pepper) != PEPPER_LEN;
 
@@ -59,7 +60,7 @@ my $_recover = sub {
     my @pb = unpack 'C*', $pepper;
 
     my %seen;
-    my $node = $ring->{first_node};
+    my $node = $ring->{f};
 
     # pre-allocate the 512-byte master-secret buffer
     my $secret = "\0" x MASTER_SECRET_LEN;

@@ -4,8 +4,8 @@ sub rings_equal {
         unless $r1->{name_hash} eq $r2->{name_hash}
             && $r1->{mac_key} eq $r2->{mac_key};
 
-    my $n1 = $r1->{first_node};
-    my $n2 = $r2->{first_node};
+    my $n1 = $r1->{f};
+    my $n2 = $r2->{f};
 
     do {
         my %a = $n1->();
@@ -19,7 +19,7 @@ sub rings_equal {
 
         $n1 = $a{next_node};
         $n2 = $b{next_node};
-    } while ( refaddr($n1) != refaddr($r1->{first_node}) );
+    } while ( refaddr($n1) != refaddr($r1->{f}) );
 
     return 1;
 }

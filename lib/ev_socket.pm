@@ -230,7 +230,7 @@ sub _handle_tag {
 sub _begin_ring {
     my ($h) = @_;
     my $ctx = $h->{ctx};
-    $ctx->{loader} = gv_l->new;
+    $ctx->{loader} = gv_l::Loader->new; ## $ctx->{loader} = gv_l->new;
 }
 
 
@@ -248,7 +248,8 @@ sub _handle_len {
         $tag = $h->{ctx}{proto}{tag} if defined $h->{ctx}{proto}{tag};
         if ( defined $tag ) {
             ## so we are finishing with a \000\000 double zero and we have a tag
-            $h->{ctx}->{loader}->_stop;
+            $h->{ctx}->{loader}->stop;
+            ### $h->{ctx}->{loader}->_stop;
             undef $h->{ctx}{proto}{tag}; ## we already do this elsewhere but can't hurt here to be clear.
         }
         $h->push_read( chunk => 4, \&_handle_tag );
@@ -260,7 +261,9 @@ sub _handle_len {
         if ( defined $h->{ctx}{proto}{tag} and $h->{ctx}{proto}{tag} eq 'RING' ) {
             ## We are loading a ring.
             my $ctx = $h->{ctx};
-            return _protocol_error($h, "protocol error") unless my $ok  = $ctx->{loader}->_line_in($blob);
+            return _protocol_error($h, "protocol error")
+                unless my $ok  = $ctx->{loader}->line_in($blob);
+            ###return _protocol_error($h, "protocol error") unless my $ok  = $ctx->{loader}->_line_in($blob);
         }
         $h->push_read( chunk => 2, \&_handle_len );
     });
