@@ -5,7 +5,11 @@ use warnings;
 
 use Carp         qw(carp);
 use MIME::Base64 qw(encode_base64);
+use Crypt::Digest::BLAKE2b_256 ();
 use Scalar::Util qw(refaddr);
+use Crypt::Misc ();
+
+# We do basic authentication with Blake in-case of protocol errors but the script is pre-authenticated so this is integrity not authenticity
 
 sub save_cipher_ring {
     my ( $ring, $file, $overwrite ) = @_;
@@ -23,24 +27,33 @@ sub save_cipher_ring {
       or carp("save_cipher_ring: cannot open '$file': $!") && return;
 
     # header ---
-    print {$fh} $ring->{name_hash}, "\n";                           # 1-name-hash
-    print {$fh} encode_base64( $ring->{mac_key} // q{}, '' ), "\n"; # 2-MAC-key
+    my $current_blake = 'save_cipher_ring:';
+
+    $current_blake = Crypt::Digest::BLAKE2b_256::blake2b_256_hex( $current_blake . $ring->{name_hash} );
+    print {$fh} $ring->{name_hash}, "\t", $current_blake, "\n"; # 1-name-hash
+
+    $current_blake = Crypt::Digest::BLAKE2b_256::blake2b_256_hex( $current_blake . $ring->{mac_key} );
+    print {$fh} encode_base64( $ring->{mac_key} // q{}, '' ), "\t", $current_blake, "\n"; # 2-MAC-key
     unless ( exists $ring->{aes_key} && defined $ring->{aes_key} ) {
         carp 'save_cipher_ring: ring missing aes_key';
         close $fh; return;
     }
-    print {$fh} encode_base64( $ring->{aes_key}, '' ), "\n";        # 3-AES-key
+
+    $current_blake = Crypt::Digest::BLAKE2b_256::blake2b_256_hex( $current_blake . $ring->{aes_key} );
+    print {$fh} encode_base64( $ring->{aes_key}, '' ), "\t", $current_blake, "\n";        # 3-AES-key
 
     # nodes ---
     my %seen;
     my $node = $ring->{f};
     while ( $node && !$seen{ refaddr $node }++ ) {
         my %raw = $node->('raw');                                   # ← no decrypt!
+        $current_blake = Crypt::Digest::BLAKE2b_256::blake2b_256($current_blake . $raw{iv} . $raw{ct} . $raw{tag} );
         print {$fh} join( "\t",
             $raw{index},
-            encode_base64( $raw{iv},  '' ),
-            encode_base64( $raw{ct},  '' ),
-            encode_base64( $raw{tag}, '' ),
+            Crypt::Misc::encode_b64( $raw{iv}       ),
+            Crypt::Misc::encode_b64( $raw{ct}       ),
+            Crypt::Misc::encode_b64( $raw{tag}      ),
+            Crypt::Misc::encode_b64( $current_blake ),
         ), "\n";
         $node = $raw{next_node};
     }

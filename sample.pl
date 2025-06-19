@@ -27,7 +27,7 @@ use gv_m       ();    # decrypt
 use gv_random  ();    # crypto-graphic random bytes
 
 my $ring_name = 'memory_2';
-my $file      = '/tmp/g_vault_master_secrets_memory_18._gvr_';
+my $file      = '/tmp/g_vault_master_secrets_memory_20._gvr_';
 
 # 1) build & save
 my ($ring,$err);
@@ -40,7 +40,7 @@ if ( $ring ) {
 }
 
 # 2) load (put in cache once)
-gv_l::gv_l($file)->();
+#gv_l::gv_l($file)->();
 
 print "\n\n";
 my $pepper = '12345678' x 4;   # 32-byte pepper
