@@ -1,19 +1,15 @@
 # lib/gv_l.pm
 #
-# “PARA-MODE” Cipher-Ring Loader
-# ==============================
-#  • Each node is a self-contained closure.
-#  • Successor links are *weak* to avoid reference cycles.
-#  • The ring object keeps a strong @nodes array so closures stay
-#    alive while the ring sits in %gv_l::CACHED_RING.
-#  • Deleting the cache entry instantly frees everything.
+# PARA-MODE cipher-ring loader
+# ----------------------------
+#   * Each node is an independent closure (fresh CBC handle, copied keys).
+#   * Successor links are weakened; a strong @nodes array in the ring
+#     (stored only in the cache) keeps closures alive.
+#   * _stop() wipes the loader, stores the ring in the process-wide
+#     cache, prints a success message, and returns 1.
 #
-# API
-# ----
-#   my $ldr  = gv_l->new;
-#   $ldr->_line_in($line);      # feed each line from file/stream
-#   my $ring = $ldr->_stop;     # { first_node => CODE, nodes => \@closures, name_hash => HEX }
-#   my $same = gv_l::get_cached_ring($hex);
+#   You now retrieve a ring exclusively via
+#       my $ring = gv_l::get_cached_ring($hash_hex);
 #
 package gv_l;
 
@@ -28,7 +24,7 @@ use Crypt::Digest::BLAKE2b_256;
 use Scalar::Util              qw(weaken);
 
 #--------------------------------------------------------------------#
-# Global cache: { name_hash_hex => $ring_hash }
+# Global cache : { name_hash_hex → $ring_hash }
 #--------------------------------------------------------------------#
 my $CACHED_RING = {};
 
@@ -42,18 +38,18 @@ sub new {
         nodes             => 0,
         name_hash_hex     => undef,
 
-        mac_key           => undef,   # decoded
-        aes_key           => undef,   # 32-byte decoded
+        mac_key           => undef,   # decoded string
+        aes_key           => undef,   # 32-byte decoded string
 
-        closures          => [],      # tmp array of CODE refs
-        next_ref          => [],      # [ \$next_scalar, … ]
-        next_iv_ref       => [],      # [ \$next_iv_scalar, … ]
-        first_iv_literal  => undef,   # IV₀ to close the ring
+        closures          => [],
+        next_ref          => [],
+        next_iv_ref       => [],
+        first_iv_literal  => undef,
     }, $class;
 }
 
 #--------------------------------------------------------------------#
-# _line_in( $raw_line ) – feed one line
+# _line_in( $raw_line )
 #--------------------------------------------------------------------#
 sub _line_in {
     my ( $self, $line ) = @_;
@@ -62,8 +58,8 @@ sub _line_in {
     chomp $line;
     $line =~ s/^\s+|\s+$//g;
 
-    #— header lines —#
-    if    ( $self->{lineno} == 1 ) {        # name-hash
+    #–– header lines ––#
+    if ( $self->{lineno} == 1 ) {
         $self->{name_hash_hex} = $line;
         if ( $CACHED_RING->{$line} ) {
             warn "CANNOT ERASE A KEY!\n";
@@ -72,21 +68,21 @@ sub _line_in {
         }
         return 1;
     }
-    elsif ( $self->{lineno} == 2 ) {        # MAC key
+    elsif ( $self->{lineno} == 2 ) {
         $self->{mac_key} = length $line ? decode_base64($line) : '';
         return 1;
     }
-    elsif ( $self->{lineno} == 3 ) {        # AES key
+    elsif ( $self->{lineno} == 3 ) {
         defined $line
           or ( carp 'load_cipher_ring: missing AES key line' ), return;
         my $aes = decode_base64($line);
-        length $aes == 32
+        length($aes) == 32
           or ( carp 'load_cipher_ring: AES key wrong length' ), return;
         $self->{aes_key} = $aes;
         return 1;
     }
 
-    #— node lines —#
+    #–– node lines ––#
     return 1 unless length $line;
 
     my ( undef, $iv_b64, $ct_b64, $tag_b64 ) = split /\t/, $line, 4;
@@ -99,20 +95,17 @@ sub _line_in {
 
     my $idx = $self->{nodes}++;
 
-    # local copies only
     my $cbc     = Crypt::Mode::CBC->new('AES', 1);   # fresh XS object
-    my $mac_key = $self->{mac_key};
-    my $aes_key = $self->{aes_key};
+    my $mac_key = $self->{mac_key};                  # string copy
+    my $aes_key = $self->{aes_key};                  # string copy
 
     my ( $iv_l, $ct_l, $tag_l ) = ( $iv, $ct, $tag );
 
-    # placeholders for successor info
-    my ( $next, $next_iv );
+    my ( $next, $next_iv );                          # placeholders
 
     $self->{first_iv_literal} //= $iv_l;
 
     my $closure = sub {
-        # 1) MAC check
         substr(
             Crypt::Digest::BLAKE2b_256::blake2b_256(
                 $mac_key . $iv_l . $ct_l
@@ -121,29 +114,25 @@ sub _line_in {
           or do { carp "MAC mismatch in node $idx"; return };
 
         return do {
-            # 2) decrypt header & return record
-            my ( $i, $stored, $mode, $param )
-              = unpack 'nC3', $cbc->decrypt( $ct_l, $aes_key, $iv_l );
-            # 3) return record
-            (
-                index       => $i,
-                stored_byte => $stored,
-                mode        => $mode,
-                param       => $param,
-                next_node   => $next,
-                next_iv     => $next_iv,
-            );
-        };
+             my ( $i, $stored, $mode, $param )
+               = unpack 'nC3', $cbc->decrypt( $ct_l, $aes_key, $iv_l );
+             (
+                 index       => $i,
+                 stored_byte => $stored,
+                 mode        => $mode,
+                 param       => $param,
+                 next_node   => $next,
+                 next_iv     => $next_iv,
+             );
+         };
     };
-    # store scaffolding
     push @{ $self->{closures}    }, $closure;
     push @{ $self->{next_ref}    }, \$next;
     push @{ $self->{next_iv_ref} }, \$next_iv;
 
-    # link previous → this one
     if ( $idx > 0 ) {
         ${ $self->{next_ref}[ $idx - 1 ] } = $closure;
-        weaken( ${ $self->{next_ref}[ $idx - 1 ] } );       # weak edge
+        weaken( ${ $self->{next_ref}[ $idx - 1 ] } );
         ${ $self->{next_iv_ref}[ $idx - 1 ] } = $iv_l;
     }
 
@@ -151,7 +140,7 @@ sub _line_in {
 }
 
 #--------------------------------------------------------------------#
-# _stop() – finalise, wipe loader, return ring
+# _stop() – finalise, cache, wipe loader, return 1
 #--------------------------------------------------------------------#
 sub _stop {
     my ($self) = @_;
@@ -160,18 +149,19 @@ sub _stop {
         carp 'load_cipher_ring: no nodes';
         return;
     }
+    my $node_count = $self->{nodes};       # save for log after wipe
 
-    # complete the ring: last → first
-    ${ $self->{next_ref}[ $self->{nodes} - 1 ] } = $self->{closures}[0];
-    weaken( ${ $self->{next_ref}[ $self->{nodes} - 1 ] } );
-    ${ $self->{next_iv_ref}[ $self->{nodes} - 1 ] } = $self->{first_iv_literal};
+    # close the ring (last → first)
+    ${ $self->{next_ref}[ $node_count - 1 ] } = $self->{closures}[0];
+    weaken( ${ $self->{next_ref}[ $node_count - 1 ] } );
+    ${ $self->{next_iv_ref}[ $node_count - 1 ] } = $self->{first_iv_literal};
 
-    # strong @nodes array keeps closures alive while ring lives
+    # strong @nodes keeps closures alive while cached
     my @nodes = @{ $self->{closures} };
 
     my $ring = {
         first_node => $nodes[0],
-        nodes      => \@nodes,                 # strong refs
+        nodes      => \@nodes,
         name_hash  => $self->{name_hash_hex},
     };
     $CACHED_RING->{ $self->{name_hash_hex} } = $ring;
@@ -188,8 +178,8 @@ sub _stop {
     }
     delete @$self{ qw/lineno nodes name_hash_hex/ };
 
-    warn "[SUCCESS] Loaded $self->{nodes} node(s) for ring $ring->{name_hash}\n";
-    return $ring;
+    warn "[SUCCESS] Loaded $node_count node(s) for ring $ring->{name_hash}\n";
+    return 1;
 }
 
 #--------------------------------------------------------------------#
@@ -201,4 +191,3 @@ sub get_cached_ring {
 }
 
 1;  # end of gv_l
-

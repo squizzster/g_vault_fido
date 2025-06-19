@@ -292,9 +292,16 @@ sub test_decrypt {
     warn $xout if defined $xout;
     warn $xerr if defined $xerr;
 
+    my ($enc) = gv_e::encrypt({
+        plaintext => "hello, how are you?",
+        pepper    => '1' x 32,
+        key_name  => 'memory',
+        aad       => 'woof',
+    });
+    warn "I got [" . length($enc) . "] length of encrypted data.\n";
+    my ($ok) = gv_d::decrypt({ cipher_text => $enc, pepper  => '1' x 32,  aad => 'woof',});
+    warn "$ok";
 }
-
-
 
 1;
 __END__
