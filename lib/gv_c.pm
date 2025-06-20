@@ -45,21 +45,21 @@ sub build_cipher_ring {
     # -- master secret --------------------------------------------------
     my $master = $a{master_secret}
         ? Crypt::Digest::BLAKE2b_256::blake2b_256($a{master_secret})
-        : gv_random::get_bytes(MASTER_SECRET_LEN);
+        : gv_random::get_crypto_secure_prng(MASTER_SECRET_LEN);
 
     return ( undef, 'Master secret wrong length ' . length($master) )
         unless length $master == MASTER_SECRET_LEN;
 
     # -- static derivations ---------------------------------------------
     my $name_hash_hex = blake2b_256_hex( $name . BLAKE_NAME_TAG );
-    my $mac_key       = gv_random::get_bytes(MAC_KEY_LEN);          # MAC key
+    my $mac_key       = gv_random::get_crypto_secure_prng(MAC_KEY_LEN);          # MAC key
     my $aes_key       = substr blake2b_256( $master . 'AES_KEY' ), 0, AES_KEY_LEN;
 
     # AES-CBC engine (stateless)
     my $cbc = Crypt::Mode::CBC->new( 'AES', 1 );                    # PKCS#7
 
     # -- node generation ------------------------------------------------
-    my $iv0 = gv_random::get_bytes(AES_IV_LEN);
+    my $iv0 = gv_random::get_crypto_secure_prng(AES_IV_LEN);
     my @iv  = ( $iv0 );
     my ( @ciphertext, @mac );
 

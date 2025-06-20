@@ -140,9 +140,7 @@ sub encrypt {
 
     return (undef,ERR_RING_NOT_AVAILABLE) if not gv_l::is_loaded_ring($name_hash);
 
-    my $salt = gv_random::get_bytes(DYNAMIC_SALT_LEN);
-    #my ($sm) = $_recover->(gv_l::get_cached_ring($name_hash),$salt,$pep);
-    #return (undef, ERR_ENCRYPTION_FAILED) if not defined $sm;
+    my $salt = gv_random::get_crypto_secure_prng(DYNAMIC_SALT_LEN);
 
     my ($k, $nonce);
 

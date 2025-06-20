@@ -7,8 +7,9 @@ use Crypt::Digest::BLAKE2b_256   qw(blake2b_256);
 # === 1) Crypto-graphically SECURE PRNG ===
 my $crypto_secure_prng = Crypt::PRNG->new();    # auto-seeded from /dev/urandom
 
-sub get_crypto_random_bytes {
+sub get_crypto_secure_prng {
     my ($no_of_bytes) = @_;
+    return if not $no_of_bytes;
     return $crypto_secure_prng->bytes($no_of_bytes);
 }
 
@@ -16,13 +17,13 @@ sub get_crypto_random_bytes {
 sub get_bytes {
     my ($no_of_bytes) = @_;
     return if not $no_of_bytes;
-    return get_crypto_random_bytes($no_of_bytes);
+    return get_crypto_secure_prng($no_of_bytes);
 }
 
 sub get_b58f {
     my ($no_of_bytes) = @_;
     return if not $no_of_bytes;
-    return b58f::encode( get_crypto_random_bytes($no_of_bytes) );
+    return b58f::encode( get_crypto_secure_prng($no_of_bytes) );
 }
 
 

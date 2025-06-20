@@ -30,7 +30,7 @@ sub sign {
     my $ring = gv_l::get_cached_ring($name_hash)
         or return (undef, ERR_RING_NOT_AVAILABLE);
 
-    my $salt = gv_random::get_bytes(DYNAMIC_SALT_LEN);
+    my $salt = gv_random::get_crypto_secure_prng(DYNAMIC_SALT_LEN);
 
     my ($sm) = gv_e::_recover_for_mac($ring, $salt, $pep);
     return (undef, 'cycle') if not defined $sm;
