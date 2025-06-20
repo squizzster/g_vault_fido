@@ -290,16 +290,20 @@ sub _handle_stop {
     });
     $h->push_shutdown;
 }
-
+use Time::HiRes qw(time);
 sub dev_test_decrypt {
     my ($xout,$xerr) = gv_d::decrypt({
         cipher_text => hex::decode('36643337653764636365633865366638633934326261616661396330323836346137386562646435326264306437303431366365343537346533646236376137c527cbd5d7780ac9f129eda0472a7bcd15063ec2c6cbb9ddc47b2d0e11f4f282e34180aceaad1b7957de566e3fd758f60ecc2941f534ba202f7db232ecf2b857beee6ca3d17ff3c8e869c13e2e5823850e4fd7e864f8f8529e5a215b2a8cdd1154ac73f85eea3da9ce6357e755fe0d47d57d91c843b08b3645f42f91957acd'),
         pepper      => '1' x 32,
         aad         => 'woof',
     });
+
     $xout = decode_utf8($xout) unless not defined $xout and is_utf8($xout);
     warn "PREVIOUS ===> $xout" if defined $xout;
     warn "ERROR    ===> $xerr" if defined $xerr;
+
+    ### my $ring = gv_l::fetch_ring('6d37e7dccec8e6f8c942baafa9c02864a78ebdd52bd0d70416ce4574e3db67a7');
+    ### print ( dump $ring );
 
     my ($enc) = gv_e::encrypt({
         plaintext => "Good BYE!, how are you? 👋🙂🫵❓",
@@ -309,10 +313,83 @@ sub dev_test_decrypt {
     });
     #warn hex::encode($enc);
     warn "I got [" . length($enc) . "] length of encrypted data.\n" if defined $enc;
+
     my ($ok, $err) = gv_d::decrypt({ cipher_text => $enc, pepper  => '1' x 32,  aad => 'woof',});
+    warn "$err" if defined $err;
+
     $ok = decode_utf8($ok) unless not defined $ok and is_utf8($ok);
     warn "CURRENT  ===> $ok" if defined $ok;
-    warn "$err" if defined $err;
+    #bench_main();
+}
+
+sub bench_main {
+    my ($enc) = gv_e::encrypt({
+        plaintext => "h" x 8192,
+        pepper    => '1' x 32,
+        key_name  => 'default',
+        aad       => 'woof',
+    });
+
+    #my $enc    = hex::decode('36643337653764636365633865366638633934326261616661396330323836346137386562646435326264306437303431366365343537346533646236376137c527cbd5d7780ac9f129eda0472a7bcd15063ec2c6cbb9ddc47b2d0e11f4f282e34180aceaad1b7957de566e3fd758f60ecc2941f534ba202f7db232ecf2b857beee6ca3d17ff3c8e869c13e2e5823850e4fd7e864f8f8529e5a215b2a8cdd1154ac73f85eea3da9ce6357e755fe0d47d57d91c843b08b3645f42f91957acd'),
+    #my $enc    = 
+    my $pepper = '1' x 32;
+    my $aad    = 'woof';
+
+    my $stats = benchmark_decrypt(
+        cipher_text => $enc,
+        pepper      => $pepper,
+        aad         => $aad,
+        iterations  => 100000,
+    );
+
+    printf "Completed %d iterations in %.6f seconds\n",
+        $stats->{iterations}, $stats->{duration};
+    printf "=> %.0f iterations/sec\n",           $stats->{iterations_per_second};
+    printf "=> %.0f bytes/sec  (decrypting %d bytes each time)\n",
+        $stats->{bytes_per_second}, length($stats->{last_plain});
+    print  "Decrypted text (last iteration):\n$stats->{last_plain}\n";
+}
+
+sub benchmark_decrypt {
+    my %args = @_;
+    my $enc       = $args{cipher_text}  or die "cipher_text required";
+    my $pepper    = $args{pepper}       or die "pepper required";
+    my $aad       = $args{aad}          // '';
+    my $iters     = $args{iterations}   || 1_000_000;
+
+    # warm-up (optional, to avoid lazy-load skew)
+    my ($ok, $err) = gv_d::decrypt({
+        cipher_text => $enc,
+        pepper      => $pepper,
+        aad         => $aad,
+    });
+    die "initial decrypt failed: $err\n" unless defined $ok;
+
+    # timed loop
+    my $t0 = time();
+    for (1 .. $iters) {
+        ($ok, $err) = gv_d::decrypt({
+            cipher_text => $enc,
+            pepper      => $pepper,
+            aad         => $aad,
+        });
+        die "decrypt failed at iteration $_: $err\n" unless defined $ok;
+    }
+    my $t1  = time();
+    my $dur = $t1 - $t0;
+
+    # metrics
+    my $ips = $iters / $dur;
+    my $bytes_total = length($ok) * $iters;
+    my $bps = $bytes_total / $dur;
+
+    return {
+        iterations            => $iters,
+        duration              => $dur,
+        iterations_per_second => $ips,
+        bytes_per_second      => $bps,
+        last_plain            => $ok,
+    };
 }
 
 1;

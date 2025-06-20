@@ -11,6 +11,10 @@ use Crypt::Digest::BLAKE2b_512       qw(blake2b_512);
 use Carp qw(croak);
 
 use constant {
+    VERSION                     => 'V1',
+};
+
+use constant {
     MASTER_SECRET_LEN           => 32,
     DYNAMIC_SALT_LEN            => 64,
     MAC_OUTPUT_LEN              => 16,
@@ -32,9 +36,9 @@ use constant {
     DERIVE_SALT_PREFIX_3        => pack( "H*", 'a4504b6b21f0835920573bd9f308a1ff' ),
 
     # Human-readable labels for HKDF 'info' parameter
-    DS_INFO_AEAD_KEY            => 'GVAULT::INFO_AEAD_KEY::V1',
-    DS_INFO_AEAD_NONCE          => 'GVAULT::INFO_AEAD_NONCE::V1',
-    DS_INFO_MAC_KEY             => 'GVAULT::INFO_MAC_KEY::V1',
+    DS_INFO_AEAD_KEY            => 'GVAULT::INFO_AEAD_KEY::'   . VERSION,
+    DS_INFO_AEAD_NONCE          => 'GVAULT::INFO_AEAD_NONCE::' . VERSION,
+    DS_INFO_MAC_KEY             => 'GVAULT::INFO_MAC_KEY::'    . VERSION,
 };
 
 my $_undo = sub { my ($m,$p,$b)=@_;
@@ -51,7 +55,7 @@ my $_recover = sub {
 
     # sanity checks ­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­
     ### print "RING IS " . (ref $ring ) . "\n";
-    return (undef, 'bad ring')   unless ( ref $ring eq 'HASH' or ref $ring eq 'gv_l::Ring' );
+    return (undef, 'bad ring')   unless ( ref $ring eq 'gv_l::Ring' );
     return (undef, 'bad salt')   if length($salt)   != DYNAMIC_SALT_LEN;
     return (undef, 'bad pepper') if length($pepper) != PEPPER_LEN;
 
@@ -62,7 +66,7 @@ my $_recover = sub {
     my %seen;
     my $node = $ring->{f};
 
-    # pre-allocate the 512-byte master-secret buffer
+    # pre-allocate the MASTER_SECRET_LEN-byte master-secret buffer
     my $secret = "\0" x MASTER_SECRET_LEN;
     my $i      = 0;                          # write index
 
@@ -92,12 +96,13 @@ my $_recover = sub {
         $node = $d{next_node};
     }
 
-    return (undef, 'cycle') unless $i == MASTER_SECRET_LEN;
-    return ($secret, undef);
+    return undef unless $i == MASTER_SECRET_LEN;
+    return $secret;
 };
 
 my $_derive_aead_params = sub {
     my ($sm,$salt,$pep)=@_;
+    return if not defined $sm;
     my $ikm = DS_IKM_AEAD . $sm . $pep;
     my $k   = hkdf($ikm, DERIVE_SALT_PREFIX_1 . $salt, 'BLAKE2b_256', 32, DS_INFO_AEAD_KEY);
     my $n   = hkdf($ikm, DERIVE_SALT_PREFIX_2 . $salt, 'BLAKE2b_256', 12, DS_INFO_AEAD_NONCE);
@@ -132,14 +137,31 @@ sub encrypt {
     return (undef,ERR_INVALID_INPUT) unless defined $name;
 
     my $name_hash = Crypt::Digest::BLAKE2b_256::blake2b_256_hex($name . BLAKE_NAME_TAG);
-    my $ring      = gv_l::get_cached_ring($name_hash)
-        or return (undef,ERR_RING_NOT_AVAILABLE);
+
+    return (undef,ERR_RING_NOT_AVAILABLE) if not gv_l::is_loaded_ring($name_hash);
 
     my $salt = gv_random::get_bytes(DYNAMIC_SALT_LEN);
-    my ($sm,$er1) = $_recover->($ring,$salt,$pep);
-    return (undef, ERR_ENCRYPTION_FAILED) if $er1;
+    #my ($sm) = $_recover->(gv_l::get_cached_ring($name_hash),$salt,$pep);
+    #return (undef, ERR_ENCRYPTION_FAILED) if not defined $sm;
 
-    my ($k,$nonce) = @{ $_derive_aead_params->($sm,$salt,$pep) };
+    my ($k, $nonce);
+
+    eval {
+        ($k, $nonce) = @{ 
+            $_derive_aead_params->(
+                $_recover->(
+                    gv_l::get_cached_ring($name_hash),
+                    $salt,
+                    $pep
+                ),
+                $salt,
+                $pep
+            )
+        };
+        1;  # ensure eval returns true on success
+    } or do {
+        return (undef,ERR_ENCRYPTION_FAILED);
+    };
 
     my ($ct,$tag);
     eval { ($ct,$tag)=chacha20poly1305_encrypt_authenticate($k,$nonce,$aad_hashed,$pt); 1 }

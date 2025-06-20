@@ -284,7 +284,8 @@ sub stop {
     return $self->_fail('no nodes loaded') unless $self->{nodes};
 
     # close the ring (last → first)
-    my $name_hash = "$self->{name_hash}";
+    my $name_hash = gv_l::_dup_nocow("$self->{name_hash}");
+    my $name      = gv_l::_dup_nocow("$self->{name}"     );
     my $tail_ref  = $self->{next_ref}[ $self->{nodes} - 1 ];
     $$tail_ref    = $self->{closures}[0];
     Scalar::Util::weaken($$tail_ref);
@@ -298,6 +299,7 @@ sub stop {
         bless {
             f         => $self->{closures}[0],
             nodes     => [ @{ $self->{closures} } ],
+            name      => $name,
             name_hash => $name_hash,
         }, 'gv_l::Ring',
     );

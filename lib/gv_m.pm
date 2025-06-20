@@ -32,8 +32,8 @@ sub sign {
 
     my $salt = gv_random::get_bytes(DYNAMIC_SALT_LEN);
 
-    my ($sm, $er) = gv_e::_recover_for_mac($ring, $salt, $pep);
-    return (undef, $er) if $er;
+    my ($sm) = gv_e::_recover_for_mac($ring, $salt, $pep);
+    return (undef, 'cycle') if not defined $sm;
     my ($k) = @{ gv_e::_derive_for_mac($sm, $salt, $pep) };
 
     my $tag = substr blake2b_256(SIG_TAG . $msg, $k), 0, TAG_LEN;
@@ -58,8 +58,8 @@ sub verify {
 
     my $ring = gv_l::get_cached_ring($name_hash)
         or return (undef, ERR_RING_NOT_AVAILABLE);
-    my ($sm, $er) = gv_e::_recover_for_mac($ring, $salt, $pep);
-    return (undef, $er) if $er;
+    my ($sm) = gv_e::_recover_for_mac($ring, $salt, $pep);
+    return (undef, 'cycle') if not defined $sm;
     my ($k) = @{ gv_e::_derive_for_mac($sm, $salt, $pep) };
 
     my $expect = substr blake2b_256(SIG_TAG . $msg, $k), 0, TAG_LEN;

@@ -40,13 +40,25 @@ sub decrypt {
     my $tag       = substr($blob,-16,16,'');
     my $ct        = $blob;
 
-    my $ring = gv_l::get_cached_ring($name_hash)
-        or return (undef,ERR_RING_NOT_AVAILABLE);
+    return (undef,ERR_RING_NOT_AVAILABLE) if not gv_l::is_loaded_ring($name_hash);
 
-    my ($sm, $er1) = gv_e::_recover_for_mac($ring, $salt, $pepper);
-    return (undef, ERR_DECRYPTION_FAILED) if $er1;
+    my ($k, $nck);
 
-    my ($k, $nck) = @{ gv_e::_derive_for_aead($sm, $salt, $pepper) };
+    eval {
+        ($k, $nck) = @{ gv_e::_derive_for_aead(
+            gv_e::_recover_for_mac(
+                gv_l::get_cached_ring($name_hash),
+                $salt,
+                $pepper
+            ),
+            $salt,
+            $pepper
+        ) };
+        1;  # make sure eval returns true on success
+    } or do {
+        return (undef,ERR_DECRYPTION_FAILED);
+    };
+
     return (undef,ERR_DECRYPTION_FAILED) if $nck ne $nonce;
 
     my $pt;
