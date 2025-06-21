@@ -10,49 +10,49 @@ use Crypt::KeyDerivation;
 use Exporter 'import';
 our @EXPORT_OK = qw(get_master_key);
 
+#   We configure cryptographically random *fixed* tags which we'll utilize for domain separation.
+#   These are not specifically sensitive but they are not public knowledge either!
+#   People would need to access the source-code to determine which would already be bad!
+#   Overall, they are unique to our application so our final master keys are unique to only us - nobody else!
 
-#   We configure crypto-graphically random *fixed* tags which we'll utilize later....
-#   These are not sensitive however people are even beginning to create rainbow-Argon tables now!
-#   Overall, they are unique to our application so our final passwords are unique to only us - nobody else!
 use constant {
-    HKDF_SALT             => pack("H*", 'd06c88296cc2a815ece6788cf2da700b'),
-    PASSWORD_TAG          => pack("H*", '2294aa1e1187b79ea5f772d8d58221d1'),
-    VAULT_TAG             => pack("H*", 'dd3d274c7c90a66558427136d0db60a6'),
-    VERSION               => 'V1.0',
+    HKDF_DOMAIN_SEP        => pack("H*", 'd06c88296cc2a815ece6788cf2da700b'),
+    PASSWORD_DOMAIN_SEP    => pack("H*", '2294aa1e1187b79ea5f772d8d58221d1'),
+    VAULT_DOMAIN_SEP       => pack("H*", 'dd3d274c7c90a66558427136d0db60a6'),
+    VERSION                => 'V1.0',
 };
-
 
 sub get_master_key {
     # 1. Locked-in Argon2id parameters. We fix as different params = different key = OMG! later!
-    my $i = 8192; # iterations, x 8192
-    my $m = 64;   # memory,     = 64mb
-    my $c = 1;    # cpu,        = 1
+    my $t_cost = 8192; # time cost (iterations)
+    my $m_cost = 64;   # memory,     = 64mb
+    my $p_cost = 1;    # parallelism = 1
 
     # 2. Parse vault and password from STDIN if available
-    my ($vault_name, $plain_password);
+    my ($vault_namespace, $plain_password);
     my $is_stdin_tty = -t STDIN;
 
     if (!$is_stdin_tty) {
         my $line = <STDIN>;
         chomp($line);
         if ($line =~ /:/) {
-            ($vault_name, $plain_password) = split(/:/, $line, 2);
-            if (!defined $vault_name || $vault_name eq '' || $vault_name =~ /:/) {
+            ($vault_namespace, $plain_password) = split(/:/, $line, 2);
+            if (!defined $vault_namespace || $vault_namespace eq '' || $vault_namespace =~ /:/) {
                 die "Invalid vault name: cannot be empty or contain ':'\n";
             }
         } else {
-            $vault_name = 'default';
+            $vault_namespace = 'default';
             $plain_password   = $line;
         }
-        print STDERR "Using vault: $vault_name (input from STDIN)\n";
+        print STDERR "Using vault: $vault_namespace (input from STDIN)\n";
     }
 
     # 3. Prompt for vault name if not provided
-    if (!defined $vault_name) {
+    if (!defined $vault_namespace) {
         print STDERR "Vault name (press Enter for 'default'): ";
-        chomp($vault_name = <STDIN>);
-        $vault_name = 'default' if $vault_name eq '';
-        die "Invalid vault name: cannot contain ':'\n" if $vault_name =~ /:/;
+        chomp($vault_namespace = <STDIN>);
+        $vault_namespace = 'default' if $vault_namespace eq '';
+        die "Invalid vault name: cannot contain ':'\n" if $vault_namespace =~ /:/;
     }
 
     # 4. Prompt for password interactively (if not from STDIN)
@@ -95,33 +95,30 @@ sub get_master_key {
         }
     }
 
-    # 5. Feed Argon...
-    #    We could, but we don't want to feed argon just a '$plain_password' as well that could be 'password', so we always feed an entirely derived hash.
+    # 5. Domain-separated derivation before Argon2id:
+    #    We never feed Argon2id a raw password or vault name; instead, we always domain-separate and hash them.
 
-    my $feed_argon_password = blake2b_256(PASSWORD_TAG . $plain_password);
-    #    we could, but we don't want to feed argon just a 'plain_vault_name' so again we derive..
+    my $argon2id_password = blake2b_256(PASSWORD_DOMAIN_SEP . $plain_password);
+    my $argon2id_context  = blake2b_256(VAULT_DOMAIN_SEP    . $vault_namespace);
 
-    my $feed_argon_salt     = blake2b_256(VAULT_TAG    . $vault_name); 
     # 6. Argon2id derivation (32-byte key)
-
-    ## lower memory for lower memory edge devices but iterations is high
-    my $argon_raw_output = argon2id_raw( 
-        $feed_argon_password, $feed_argon_salt,
-        $i, $m * 1024, $c, 32
+    my $argon2id_out = argon2id_raw(
+        $argon2id_password, $argon2id_context,
+        $t_cost, $m_cost * 1024, $p_cost, 32
     );
 
-    #  hkdf salt is 'TAG + everything' but *NOT* argon_raw_output (or VERSION)
-    my $hkdf_salt = blake2b_256(HKDF_SALT . $vault_name . $plain_password . $feed_argon_password . $feed_argon_salt); 
+    # 7. HKDF "salt" is really a further domain-separated context for the final HKDF step
+    my $hkdf_context = blake2b_256(HKDF_DOMAIN_SEP . $vault_namespace . $argon2id_password . $argon2id_context);
 
-    # 8. Final key derivation, which is argon_raw_output + hkdf_salt + version_label.
-    my $password = Crypt::KeyDerivation::hkdf($argon_raw_output, $hkdf_salt, 'BLAKE2b_256', 32, VERSION);
-    return unpack("H*", $password);
+    # 8. Final key derivation, which is argon2id_out + hkdf_context + version label.
+    my $master_key = Crypt::KeyDerivation::hkdf($argon2id_out, $hkdf_context, 'BLAKE2b_256', 32, VERSION);
+    return ($vault_namespace, unpack("H*", $master_key));
 
-    # 10.
-    # so if a user's password is actually "password"... with a vault name of 'default'
-    # we store in DB => '33cec1e9f081a8328f61bfe5dc9900e3d32ded2d8ac53052571dd18401a1d738',
-    # and this is deterministic.
+    # NOTES:
+    # The final derived key must "collide" with itself deterministically. That’s not a flaw — that’s the point.
+    # Anyone using the same password and vault name gets the same final key.
+    # We are not seeking hash collisions — we are seeking identity preservation:
+    # The final key is the key to another system... it is deterministic but cryptographically random.
 }
 
 1;
-

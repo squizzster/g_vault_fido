@@ -304,14 +304,22 @@ sub stop {
         }, 'gv_l::Ring',
     );
 
-    Carp::carp sprintf '[SUCCESS] Loaded %d nodes for ring %s',
-        $self->{nodes}, $name_hash;
+    Carp::carp sprintf '[SUCCESS] Loaded [%s] ring.', $self->{name};
 
     $self->_secure_wipe;
     1;
 }
 
 sub _secure_wipe {
+    my ($self) = @_;
+    gv_l::_wipe_scalar( \ $self->{$_} ), delete $self->{$_}
+        for grep defined $self->{$_}, qw/aes_key mac_key first_iv/;
+
+    delete @$self{ qw/lineno nodes name_hash
+                      closures next_ref next_iv/ };
+}
+
+sub _delete__secure_wipe {
     my ($self) = @_;
     gv_l::_wipe_scalar( \ $self->{$_} ), delete $self->{$_}
         for grep defined $self->{$_}, qw/aes_key mac_key/;

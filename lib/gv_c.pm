@@ -128,7 +128,6 @@ sub build_cipher_ring {
     }
     ${ $next_ref[$_] } = $closures[ ( $_ + 1 ) % @closures ] for 0 .. $#closures;
 
-    # façade – now **also** exports mac_key & aes_key for secure serialisation
     return (
         {
             f => $closures[0],

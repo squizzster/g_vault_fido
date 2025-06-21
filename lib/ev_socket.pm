@@ -58,20 +58,23 @@ use constant {
 # add( $g, %opts ) – register a new listening socket
 ###############################################################################
 
-sub add { 
-    local $@; 
-    my $r = eval { _add(@_) }; 
-    $@ ? (warn "add failed: $@", undef) : $r 
+sub add {
+    local $@;
+    my $r = eval { _add(@_) };
+    $@ ? (warn "add failed: $@", undef) : $r
 }
 
 sub _add {
     my ($g, %opts) = @_;
 
-    #––––– parameters –––––#
-    my $path     = $opts{path}     // croak "add(): 'path' required";
-    my $abstract = $opts{abstract} // 0;
-    my $mode     = $opts{mode}     // croak "add(): 'mode' required";
-    my $backlog  = $opts{backlog}  // SOMAXCONN;
+    #––––– parameters with defaults –––––#
+    my $path       = $opts{path}       // croak "add(): 'path' required";
+    my $abstract   = $opts{abstract}   // 0;
+    my $mode       = $opts{mode}       // croak "add(): 'mode' required";
+    my $backlog    = $opts{backlog}    // SOMAXCONN;
+    my $rbuf_max   = $opts{rbuf_max}   // 8 * 1024;
+    my $wbuf_max   = $opts{wbuf_max}   // 8 * 1024;
+    my $timeout    = exists $opts{timeout} ? $opts{timeout} : 0.5; # can be 0
 
     $path = gv_dir::abs($path) unless $abstract;
     $backlog = SOMAXCONN if $backlog > SOMAXCONN;
@@ -96,50 +99,55 @@ sub _add {
     #––––– registry entry –––––#
     my $entry = $g->{ev_socket}{listeners}{$path} = {
         listener  => $listener,
-        clients   => {},                 # key = "$client"
-        guard     => undef,              # AE watcher
+        clients   => {},
+        guard     => undef,
         abstract  => $abstract,
+        shown     => $shown,
+    };
+
+    #––––– accept callback –––––#
+    my $accept_cb = sub {
+        my $client = $listener->accept or return;
+        my $id     = "$client";
+
+        my $creds = get_peer_cred::get_peer_cred($client);
+        unless ( $creds && defined $creds->{uid} ) {
+            warn "[$shown] peer-cred check failed, dropping\n";
+            $client->close; return;
+        }
+
+        my $h = AnyEvent::Handle->new(
+            fh        => $client,
+            rbuf_max  => $rbuf_max,
+            wbuf_max  => $wbuf_max,
+            timeout   => $timeout,
+            on_error  => \&_eof_error,
+            on_eof    => \&_eof_error,
+        );
+
+        $h->{ctx} = $entry->{clients}{$id} = {
+            creds       => $creds,
+            handle      => $h,
+            socket_path => $shown,
+            proto       => { tag => undef, blobs => [] },
+            parent      => $entry,
+        };
+        weaken $h->{ctx}{parent};
+
+        warn "|| CLIENT_CONNECT || pid=$creds->{pid} || src=$shown ||\n";
+        $h->push_read( chunk => 5, \&_handle_start );
     };
 
     #––––– AE accept loop –––––#
     $entry->{guard} = AnyEvent->io(
         fh   => $listener,
         poll => 'r',
-        cb   => sub {
-            my $client = $listener->accept or return;
-            my $id     = "$client";
-
-            my $creds = get_peer_cred::get_peer_cred($client);
-            unless ( $creds && defined $creds->{uid} ) {
-                warn "[$shown] peer-cred check failed, dropping\n";
-                $client->close; return;
-            }
-
-            my $h = AnyEvent::Handle->new(
-                fh        => $client,
-                rbuf_max  => 8 * 1024,
-                wbuf_max  => 8 * 1024,
-                timeout   => 10,
-                on_error  => \&_eof_error,
-                on_eof    => \&_eof_error,
-            );
-
-            $h->{ctx} = $entry->{clients}{$id} = {
-                creds       => $creds,
-                handle      => $h,
-                socket_path => $shown,
-                proto       => { tag => undef, blobs => [] },
-                parent      => $entry,
-            };
-            weaken $h->{ctx}{parent};
-
-            warn "|| CLIENT_CONNECT || pid=$creds->{pid} || src=$shown ||\n";
-            # prime protocol
-            $h->push_read( chunk => 5, \&_handle_start );
-        });
+        cb   => $accept_cb,
+    );
 
     return 1;
 }
+
 
 ###############################################################################
 # remove( $g, $path ) – drop a single listener
@@ -290,17 +298,18 @@ sub _handle_stop {
     });
     $h->push_shutdown;
 }
+
 use Time::HiRes qw(time);
 sub dev_test_decrypt {
     my ($xout,$xerr) = gv_d::decrypt({
-        cipher_text => hex::decode('36643337653764636365633865366638633934326261616661396330323836346137386562646435326264306437303431366365343537346533646236376137c527cbd5d7780ac9f129eda0472a7bcd15063ec2c6cbb9ddc47b2d0e11f4f282e34180aceaad1b7957de566e3fd758f60ecc2941f534ba202f7db232ecf2b857beee6ca3d17ff3c8e869c13e2e5823850e4fd7e864f8f8529e5a215b2a8cdd1154ac73f85eea3da9ce6357e755fe0d47d57d91c843b08b3645f42f91957acd'),
+        cipher_text => hex::decode('366433376537646363656338653666386339343262616166613963303238363461373865626464353262643064373034313663653435373465336462363761371370295a0e5555231313c6e2677fa4a8c2735d32c589849db187b43e8ec540ce5ea2dd7d9f3642d09f73544e6e751355753c5d0e72e1e3db13775c70d559c34b3184e6b0014eab9fce8238c4f94311b8d7b0b61f3381ddd3b3298bc77f6dffabb91de12ae2c3d502712ef03f672437882921bba505094dd98e3079aa9fb974083a70df'),
         pepper      => '1' x 32,
         aad         => 'woof',
     });
 
     $xout = decode_utf8($xout) unless not defined $xout and is_utf8($xout);
     warn "PREVIOUS ===> $xout" if defined $xout;
-    warn "ERROR    ===> $xerr" if defined $xerr;
+    #warn "ERROR    ===> $xerr" if defined $xerr;
 
     ### my $ring = gv_l::fetch_ring('6d37e7dccec8e6f8c942baafa9c02864a78ebdd52bd0d70416ce4574e3db67a7');
     ### print ( dump $ring );
@@ -311,11 +320,11 @@ sub dev_test_decrypt {
         key_name  => 'default',
         aad       => 'woof',
     });
-    #warn hex::encode($enc);
+    warn hex::encode($enc) if defined $enc;
     warn "I got [" . length($enc) . "] length of encrypted data.\n" if defined $enc;
 
     my ($ok, $err) = gv_d::decrypt({ cipher_text => $enc, pepper  => '1' x 32,  aad => 'woof',});
-    warn "$err" if defined $err;
+    #warn "$err" if defined $err;
 
     $ok = decode_utf8($ok) unless not defined $ok and is_utf8($ok);
     warn "CURRENT  ===> $ok" if defined $ok;
