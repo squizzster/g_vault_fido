@@ -49,12 +49,23 @@ sub main {
     # Phase 2: Get credentials, connect, and build the data structure.
     my ( $sock, $ring ) = setup_and_build_ring();
 
-    # Phase 3: Send the data structure to the daemon over the socket.
-    stream_cipher_ring( $sock, $ring );
+    if ( $sock and $ring ) {
+        # Phase 3: Send the data structure to the daemon over the socket.
+        stream_cipher_ring( $sock, $ring );
 
-    # Phase 4: Wait for a confirmation from the daemon before exiting.
-    wait_for_acknowledgment($sock);
-
+        # Phase 4: Wait for a confirmation from the daemon before exiting.
+        if  ( wait_for_acknowledgment($sock) ) {
+            print "OK\n";
+        }
+        else {
+            print STDERR ("ERROR\n");
+            return 1;
+        }
+    }
+    else {
+        print STDERR ("ERROR\n");
+        return 1;
+    }
     return 0;
 }
 
@@ -162,6 +173,9 @@ sub wait_for_acknowledgment {
     my ($sock) = @_;
     my ($n, $buf);
     $n = sysread $sock, $buf, MAX_LINE;
+    chomp $buf;
+    return 1 if $buf eq 'OK';
+    return;
 }
 
 # ------------------------------------------------------------------------------

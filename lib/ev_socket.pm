@@ -217,7 +217,17 @@ sub _protocol_error {
 #––– STEP 1 – expect "START"
 sub _handle_start {
     my ($h, $data) = @_;
-    return _protocol_error($h, "expected START") unless $data eq 'START';
+    if    ( $data eq 'START' ) {
+    }
+    elsif ( $data eq 'CHECK' ) {
+        $h->push_shutdown;
+        return;
+    }
+    else {
+        #  ????
+        return _protocol_error($h, "expected starting tag");
+    }
+    # Queue next...
     $h->push_read( chunk => 4, \&_handle_tag );
 }
 
