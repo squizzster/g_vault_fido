@@ -32,6 +32,11 @@ use constant {
     MAX_LINE    => 4096,
 };
 
+# Execute the main subroutine and exit with its status code.
+exit main();
+
+
+
 # ==============================================================================
 # -- MAIN EXECUTION ------------------------------------------------------------
 # ==============================================================================
@@ -53,8 +58,6 @@ sub main {
     return 0;
 }
 
-# Execute the main subroutine and exit with its status code.
-exit main();
 
 # ==============================================================================
 # -- SUBROUTINES ---------------------------------------------------------------
@@ -158,7 +161,6 @@ sub stream_cipher_ring {
 sub wait_for_acknowledgment {
     my ($sock) = @_;
     my ($n, $buf);
-    $n = sysread $sock, $buf, MAX_LINE;
     $n = sysread $sock, $buf, MAX_LINE;
 }
 
