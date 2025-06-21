@@ -6,7 +6,7 @@ use File::Basename ();
 use Cwd            ();
 
 
-sub gv_dir::abs {
+sub gv_dir::abs_path {
     my ($path) = @_;
     return if not defined $path;
 
@@ -36,7 +36,6 @@ sub gv_dir::base_name {
     my $base_name = File::Basename::basename($path);
     return $base_name;
 }
-
 sub gv_dir::dir_name {
     my ($path) = @_;
     return if not defined $path;

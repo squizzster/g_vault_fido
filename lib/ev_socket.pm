@@ -43,7 +43,7 @@ use Encode                    qw(decode_utf8 is_utf8);
 use make_unix_socket;
 use get_peer_cred;
 use gv_dir;
-use hex;
+use gv_hex;
 
 our $VERSION = '0.3';
 
@@ -111,7 +111,7 @@ sub _add {
         my $id     = "$client";
 
         my $creds = get_peer_cred::get_peer_cred($client);
-        unless ( $creds && defined $creds->{uid} ) {
+        unless ( $creds && defined $creds->{uid} && defined $creds->{pid} ) {
             warn "[$shown] peer-cred check failed, dropping\n";
             $client->close; return;
         }
@@ -134,6 +134,8 @@ sub _add {
         };
         weaken $h->{ctx}{parent};
 
+        my $pid_info = pid::pid_info ( $creds->{pid} );
+        print ( "PID_INFO => " . (dump $pid_info) . "\n" );
         warn "|| CLIENT_CONNECT || pid=$creds->{pid} || src=$shown ||\n";
         $h->push_read( chunk => 5, \&_handle_start );
     };
@@ -312,7 +314,7 @@ sub _handle_stop {
 use Time::HiRes qw(time);
 sub dev_test_decrypt {
     my ($xout,$xerr) = gv_d::decrypt({
-        cipher_text => hex::decode('366433376537646363656338653666386339343262616166613963303238363461373865626464353262643064373034313663653435373465336462363761371370295a0e5555231313c6e2677fa4a8c2735d32c589849db187b43e8ec540ce5ea2dd7d9f3642d09f73544e6e751355753c5d0e72e1e3db13775c70d559c34b3184e6b0014eab9fce8238c4f94311b8d7b0b61f3381ddd3b3298bc77f6dffabb91de12ae2c3d502712ef03f672437882921bba505094dd98e3079aa9fb974083a70df'),
+        cipher_text => gv_hex::decode('366433376537646363656338653666386339343262616166613963303238363461373865626464353262643064373034313663653435373465336462363761371370295a0e5555231313c6e2677fa4a8c2735d32c589849db187b43e8ec540ce5ea2dd7d9f3642d09f73544e6e751355753c5d0e72e1e3db13775c70d559c34b3184e6b0014eab9fce8238c4f94311b8d7b0b61f3381ddd3b3298bc77f6dffabb91de12ae2c3d502712ef03f672437882921bba505094dd98e3079aa9fb974083a70df'),
         pepper      => '1' x 32,
         aad         => 'woof',
     });
@@ -330,7 +332,7 @@ sub dev_test_decrypt {
         key_name  => 'default',
         aad       => 'woof',
     });
-    warn hex::encode($enc) if defined $enc;
+    warn gv_hex::encode($enc) if defined $enc;
     warn "I got [" . length($enc) . "] length of encrypted data.\n" if defined $enc;
 
     my ($ok, $err) = gv_d::decrypt({ cipher_text => $enc, pepper  => '1' x 32,  aad => 'woof',});
@@ -349,7 +351,7 @@ sub bench_main {
         aad       => 'woof',
     });
 
-    #my $enc    = hex::decode('36643337653764636365633865366638633934326261616661396330323836346137386562646435326264306437303431366365343537346533646236376137c527cbd5d7780ac9f129eda0472a7bcd15063ec2c6cbb9ddc47b2d0e11f4f282e34180aceaad1b7957de566e3fd758f60ecc2941f534ba202f7db232ecf2b857beee6ca3d17ff3c8e869c13e2e5823850e4fd7e864f8f8529e5a215b2a8cdd1154ac73f85eea3da9ce6357e755fe0d47d57d91c843b08b3645f42f91957acd'),
+    #my $enc    = gv_hex::decode('36643337653764636365633865366638633934326261616661396330323836346137386562646435326264306437303431366365343537346533646236376137c527cbd5d7780ac9f129eda0472a7bcd15063ec2c6cbb9ddc47b2d0e11f4f282e34180aceaad1b7957de566e3fd758f60ecc2941f534ba202f7db232ecf2b857beee6ca3d17ff3c8e869c13e2e5823850e4fd7e864f8f8529e5a215b2a8cdd1154ac73f85eea3da9ce6357e755fe0d47d57d91c843b08b3645f42f91957acd'),
     #my $enc    = 
     my $pepper = '1' x 32;
     my $aad    = 'woof';

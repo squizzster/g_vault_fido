@@ -1,14 +1,12 @@
-# Purpose: Robust, stackable helpers for /proc process inspection
 package pid;
 use strict;
 use warnings;
-use Carp      qw(carp croak);
-use Exporter  'import';
-use Scalar::Util qw(looks_like_number);
+use Carp qw(carp);
+use Exporter 'import';
+use Scalar::Util ();
 use Digest::MD5 qw(md5_hex);
 
 our @EXPORT_OK = qw(
-    _with_root
     list_pids
     slurp_file
     read_status_field
@@ -17,298 +15,361 @@ our @EXPORT_OK = qw(
     find_pids
     open_files_of
     pids_holding_file
+    pid_cache_clean
 );
 
+# Legacy stub alias for backward compatibility
+sub get_pid_info { return pid_info(@_) }
+
 # -------------------------------------------------------------------
-#  _with_root { ... } – run coderef with euid == 0 if possible
+# Internal globals – simple, in-memory cache
+# -------------------------------------------------------------------
+our $PID_CACHE = {};        # $PID_CACHE->{ $pid }->{ field } = value
+
+# -------------------------------------------------------------------
+# Internal helpers
 # -------------------------------------------------------------------
 sub _with_root {
     my ($code_ref) = @_;
-    return $code_ref->() if $> == 0;           # already euid root
-    if ($< == 0) { local $> = 0; return $code_ref->() }  # real UID root
-    return $code_ref->();                      # non-root – best effort
+    return $code_ref->() if $> == 0;        # already effective-root
+    if ( $< == 0 ) {                        # real-root, temporarily raise
+        local $> = 0;
+        return $code_ref->();
+    }
+    return $code_ref->();
+}
+
+sub error { carp "[ERROR] @_"; return undef }
+sub _info { carp "[INFO] @_";  return undef }
+
+sub check_pid_id {
+    my ($pid) = @_;
+    return error("Undefined PID")      unless defined $pid;
+    return error("Invalid PID [$pid]") unless $pid =~ /\A[1-9]\d*\z/;
+    return $pid;
 }
 
 # -------------------------------------------------------------------
-#  list_pids() – numeric PIDs currently in /proc
+# Cache primitives
 # -------------------------------------------------------------------
-sub list_pids {
-    opendir my $dh, '/proc' or croak 'Cannot open /proc';
-    my @pids = grep { /^\d+$/ } readdir $dh;
-    closedir $dh;
-    return @pids;
+sub _get_pid_start_time {
+    my ($pid) = @_;
+    my $stat = slurp_file("/proc/$pid/stat") or return;
+    my ( undef, undef, $rest ) = $stat =~ /^\d+\s+\([^\)]*\)\s+(.*)$/s
+      or return;
+    my @f = split ' ', $rest;
+    return $f[19];    # field 22 in proc(5) – starttime (clock ticks)
+}
+
+sub _cache_is_fresh {
+    my ($pid) = @_;
+    my $entry = $PID_CACHE->{$pid} or return 0;
+    my $last  = $entry->{_last_checked_epoch} // 0;
+
+    # Fast path – age < 120 seconds
+    return 1 if ( time() - $last ) < 120;
+
+    # Otherwise verify process identity via start-time
+    my $live_start = _get_pid_start_time($pid);
+    if ( defined $live_start && defined $entry->{start} && $live_start eq $entry->{start} ) {
+        $entry->{_last_checked_epoch} = time();
+        return 1;
+    }
+
+    # Stale – process ended/reused; drop everything
+    delete $PID_CACHE->{$pid};
+    return 0;
+}
+
+sub _cache_get {
+    my ( $pid, $field ) = @_;
+    return undef unless _cache_is_fresh($pid);
+    return $PID_CACHE->{$pid}->{$field};
+}
+
+sub _cache_set {
+    my ( $pid, $field, $value, $start ) = @_;
+    $PID_CACHE->{$pid} ||= {};
+    $PID_CACHE->{$pid}->{$field} = $value;
+    $PID_CACHE->{$pid}->{start}              = $start if defined $start;
+    $PID_CACHE->{$pid}->{_last_checked_epoch} = time();
+    return $value;
+}
+
+# Remove every PID whose entry fails freshness check
+sub pid_cache_clean {
+    for my $pid ( keys %{$PID_CACHE} ) {
+        _cache_is_fresh($pid) or delete $PID_CACHE->{$pid};
+    }
+    return 1;
 }
 
 # -------------------------------------------------------------------
-#  slurp_file( $path [, $max_bytes] )
+# Core primitives
 # -------------------------------------------------------------------
 sub slurp_file {
-    my ($path, $max) = @_;
-    return unless -r $path;
+    my ( $path, $max ) = @_;
+    return error("Path required") unless defined $path;
 
-    open my $fh, '<', $path or return;
-    binmode $fh;               # good practice for arbitrary files
-
-    my $buf;
-    if (defined $max) {
-        # read up to $max bytes into $buf
-        read $fh, $buf, $max;
-    }
-    else {
-        # slurp whole file
-        local $/;
-        $buf = <$fh>;
-    }
-
-    close $fh;
-    return $buf;
+    return _with_root(
+        sub {
+            return error("Unreadable path [$path]") unless -r $path;
+            open my $fh, '<', $path or return error("Open failed [$path]");
+            binmode $fh;
+            my $buf;
+            if ( defined $max ) {
+                read( $fh, $buf, $max );
+            }
+            else {
+                local $/;
+                $buf = <$fh>;
+            }
+            close $fh;
+            return $buf;
+        }
+    );
 }
-# -------------------------------------------------------------------
-#  read_status_field( $pid, $field ) ⇒ scalar | undef
-# -------------------------------------------------------------------
+
+sub list_pids {
+    # We deliberately **do not** cache /proc listing – processes appear/disappear quickly
+    return _with_root(
+        sub {
+            opendir my $dh, '/proc' or return error("Cannot open /proc");
+            my @pids = grep { /^\d+$/ } readdir $dh;
+            closedir $dh;
+            return @pids;
+        }
+    );
+}
+
 sub read_status_field {
-    my ($pid, $field) = @_;
+    my ( $pid, $field ) = @_;
+    check_pid_id($pid) // return;
+    return error("Field required") unless defined $field && length $field;
+
+    if ( my $v = _cache_get( $pid, "status_$field" ) ) {
+        return $v;
+    }
+
     my $status = slurp_file("/proc/$pid/status") or return;
-    $status =~ /^$field:\s+([^\n]+)/m ? $1 : undef;
+    if ( $status =~ /^$field:\s+([^\n]+)/m ) {
+        my $val = $1;
+        _cache_set( $pid, "status_$field", $val );
+        return $val;
+    }
+    return undef;
 }
 
-# -------------------------------------------------------------------
-#  read_cmdline( $pid ) ⇒ raw NUL-delimited cmdline | undef
-# -------------------------------------------------------------------
 sub read_cmdline {
     my ($pid) = @_;
-    slurp_file("/proc/$pid/cmdline", 4096);
+    check_pid_id($pid) // return;
+
+    if ( my $v = _cache_get( $pid, 'cmdline_raw' ) ) {
+        return $v;
+    }
+
+    my $raw = slurp_file( "/proc/$pid/cmdline", 4096 ) or return;
+    _cache_set( $pid, 'cmdline_raw', $raw );
+    return $raw;
 }
 
-sub ancestor {
-    my ($start_pid, $levels) = @_;
-    my $pid = $start_pid;
-    for (1..$levels) {
-        # read the PPid of the current pid
-        my $raw = read_status_field($pid, 'PPid') // return;
-        ($pid) = $raw =~ /(\d+)/;    # grab the number
+# -------------------------------------------------------------------
+# Internal utilities
+# -------------------------------------------------------------------
+sub _exe_inode {
+    my ($path) = @_;
+    return unless defined $path && -e $path;
+    return _with_root( sub { ( stat $path )[1] } );
+}
+
+sub _cmd_hash { md5_hex( $_[0] // '' ) }
+
+sub _ancestor_pid {
+    my ( $pid, $levels ) = @_;
+    for ( 1 .. $levels ) {
+        $pid = read_status_field( $pid, 'PPid' ) // return;
+        $pid =~ s/\D//g;
         return unless $pid;
     }
     return $pid;
 }
 
+sub _cmdline_array {
+    my ($pid) = @_;
+    my $raw = read_cmdline($pid) // return;
+    $raw =~ s/\0\z//;
+    [ split /\0/, $raw ];
+}
 
+# -------------------------------------------------------------------
+# Public API
+# -------------------------------------------------------------------
 sub pid_info {
     my ($pid) = @_;
-    return unless defined $pid && $pid =~ /\A[1-9]\d*\z/;
+    check_pid_id($pid) // return;
+
+    if ( my $cached = _cache_get( $pid, '_pid_info' ) ) {
+        return { %{$cached} };    # hand back a shallow copy to avoid callers mutating cache
+    }
 
     my $stat = slurp_file("/proc/$pid/stat") or return;
-
-    my ($stat_pid, $comm, $rest) = $stat =~ /^(\d+)\s+\((.*?)\)\s+(.*)$/s
-        or return;
+    my ( $stat_pid, $comm, $rest ) = $stat =~ /^(\d+)\s+\((.*?)\)\s+(.*)$/s
+      or return error("Malformed /proc/$pid/stat");
     my @f = split ' ', $rest;
-    return unless @f >= 22;               # kernel sanity
+    return error("Stat parse error") unless @f >= 22;
 
-    my ($uid_line) = read_status_field($pid, 'Uid') // '';
-    my ($gid_line) = read_status_field($pid, 'Gid') // '';
-    my ($uid) = split /\s+/, $uid_line // ();
-    my ($gid) = split /\s+/, $gid_line // ();
+    my $uid = ( split /\s+/, ( read_status_field( $pid, 'Uid' ) // '' ) )[0];
+    my $gid = ( split /\s+/, ( read_status_field( $pid, 'Gid' ) // '' ) )[0];
 
-    return {
+    my $info = {
         pid     => $stat_pid,
+        cmdline => _cmdline_array($pid),
         tcomm   => $comm,
         ppid    => $f[1],
-        pppid   => ancestor($pid, 2),
-        ppppid  => ancestor($pid, 3),
+        pppid   => _ancestor_pid( $pid, 2 ),
+        ppppid  => _ancestor_pid( $pid, 3 ),
         start   => $f[19],
         uid     => $uid,
         gid     => $gid,
-        exe     => readlink("/proc/$pid/exe"),
-        cwd     => readlink("/proc/$pid/cwd"),
+        exe     => _with_root( sub { readlink("/proc/$pid/exe") } ),
+        cwd     => _with_root( sub { readlink("/proc/$pid/cwd") } ),
     };
+
+    _cache_set( $pid, '_pid_info', $info, $info->{start} );
+    return { %{$info} };
 }
 
-# -------------------------------------------------------------------
-#  open_files_of( $pid ) ⇒ ARRAYREF | undef
-# -------------------------------------------------------------------
 sub open_files_of {
     my ($pid) = @_;
-    return unless -d "/proc/$pid/fd";
-    opendir my $fdh, "/proc/$pid/fd" or return;
-    my @paths;
-    while (my $fd = readdir $fdh) {
-        next if $fd =~ /^\.\.?$/;
-        my $p = readlink "/proc/$pid/fd/$fd" or next;
-        push @paths, $p;
-    }
-    closedir $fdh;
-    return \@paths;
-}
+    check_pid_id($pid) // return;
 
-# -------------------------------------------------------------------
-#  pids_holding_file( $path ) ⇒ HASHREF | undef
-# -------------------------------------------------------------------
-sub pids_holding_file {
-    my ($target) = @_;
-    croak 'Need target path' unless defined $target;
-
+    # We intentionally bypass cache – open FDs change continually.
     return _with_root(
         sub {
-            my @pids;
-
-            for my $pid ( sort { $b <=> $a } list_pids() ) {
-                next if $pid == $$;    # skip ourselves
-
-                my $fd_dir = "/proc/$pid/fd";
-                my $fdh;
-                opendir $fdh, $fd_dir
-                  or next;             # skip if it vanished/unreadable
-
-                while ( defined( my $fd = readdir $fdh ) ) {
-                    next if $fd eq '.' || $fd eq '..';
-
-                    my $path = "$fd_dir/$fd";
-                    my $link = readlink $path
-                      or next;            # not a symlink or unreadable
-
-                    if ( $link eq $target ) {
-                        push @pids, $pid;
-                        last;             # go to next PID once we’ve found one
-                    }
-                }
-
-                closedir $fdh;
+            my $dir = "/proc/$pid/fd";
+            return error("No fd dir for pid [$pid]") unless -d $dir;
+            opendir my $dh, $dir or return error("Open [$dir] failed");
+            my @paths;
+            while ( my $fd = readdir $dh ) {
+                next if $fd =~ /^\.\.?$/;
+                my $p = readlink "$dir/$fd" or next;
+                push @paths, $p;
             }
-
-            return @pids ? \@pids : undef;
+            closedir $dh;
+            return \@paths;
         }
     );
 }
 
-sub __hash_pids_holding_file {
+sub pids_holding_file {
     my ($target) = @_;
-    croak 'Need target path' unless defined $target;
+    return error("Target path required") unless defined $target;
 
-    return _with_root(sub {
-        my %hit;
-        for my $pid (sort { $b <=> $a } list_pids()) {
-            next if $pid == $$;
-
-            my $fd_dir = "/proc/$pid/fd";
-            my $fdh;
-            opendir $fdh, $fd_dir
-                or next;        # skip if it vanished or isn’t readable
-
-            while (defined(my $fd = readdir $fdh)) {
-                next if $fd =~ /^\.\.?$/;
-                my $link = readlink("$fd_dir/$fd") or next;
-                if ($link eq $target) {
-                    $hit{$pid} = $link;
-                    last;
+    # Cannot cache – any process may open/close target at any time.
+    return _with_root(
+        sub {
+            my @hits;
+            for my $pid ( list_pids() ) {
+                next if $pid == $$;
+                my $dir = "/proc/$pid/fd";
+                next unless -d $dir;
+                opendir my $dh, $dir or next;
+                while ( my $fd = readdir $dh ) {
+                    next if $fd =~ /^\.\.?$/;
+                    my $link = readlink "$dir/$fd" or next;
+                    if ( $link eq $target ) { push @hits, $pid; last }
                 }
+                closedir $dh;
             }
-
-            closedir $fdh;
+            return @hits ? \@hits : undef;
         }
-        return %hit ? \%hit : undef;
-    });
+    );
 }
+
+1;
 
 # -------------------------------------------------------------------
-#  find_pids( $exe_rx, $cmd_rx [, $uid] ) ⇒ ARRAYREF (possibly empty)
-#  – robust cache with UID + start-time + exe inode + cmd hash + TTL
+# find_pids – regex match with robust caching
 # -------------------------------------------------------------------
-my %CACHE;
-my $TTL_SECONDS = 3600;
+#my %CACHE;
+#my $TTL_SECONDS = 3600;
+#
+#sub find_pids {
+#    my ($exe_rx, $cmd_rx, $uid_filter) = @_;
+#    return error("Usage: find_pids\(exe_regex, cmd_regex[, uid]\)")
+#        unless defined $exe_rx && defined $cmd_rx;
+#    my $cache_key = join ',', $exe_rx, $cmd_rx, (defined $uid_filter ? $uid_filter : '');
+#
+#    # check cache: ensure PID exists, hasn't cycled, and not expired
+#    if (my $c = $CACHE{pid}{$cache_key}) {
+#        my $pid = $c->{pid};
+#        my $stat_raw = slurp_file("/proc/$pid/stat") || '';
+#        my @stat_fields = split ' ', $stat_raw;
+#        my $curr_start = $stat_fields[21] || '';
+#        if (_with_root(sub { -d "/proc/$pid" })
+#            && defined $curr_start && $curr_start eq $c->{start}
+#            && time <= $c->{exp}
+#        ) {
+#            my $exe = _with_root(sub { readlink("/proc/$pid/exe") }) // '';
+#            my $cmd = read_cmdline($pid) // '';
+#            my $uid = (split /\s+/, (read_status_field($pid,'Uid')//''))[0];
+#            if ($exe =~ $exe_rx && $cmd =~ $cmd_rx
+#                && _exe_inode($exe) == $c->{inode}
+#                && _cmd_hash($cmd) eq $c->{cmdhash}
+#                && (!defined $uid_filter || (defined $uid && $uid == $uid_filter))
+#            ) { return [$pid] }
+#        }
+#        delete $CACHE{pid}{$cache_key};
+#    }
+#
+#    # live scan
+#    my @matches = _with_root(sub {
+#        my @hit;
+#        for my $pid (list_pids()) {
+#            next unless -d "/proc/$pid";
+#            my $exe = readlink("/proc/$pid/exe") // next;
+#            next unless $exe =~ $exe_rx && -e $exe;
+#            my $cmd = read_cmdline($pid) // next;
+#            next unless $cmd =~ $cmd_rx;
+#            my $uid = (split /\s+/, (read_status_field($pid,'Uid')//''))[0];
+#            next if defined $uid_filter && (!defined $uid || $uid != $uid_filter);
+#            push @hit, $pid;
+#        }
+#        \@hit;
+#    })->@*;
+#
+#    # parent-child disambiguation
+#    if (@matches > 1) {
+#        @matches = sort { $b <=> $a } @matches;
+#        my $root = pop @matches;
+#        for my $pid (@matches) {
+#            my $ppid = read_status_field($pid, 'PPid') // return undef;
+#            return undef unless $ppid == $root;
+#        }
+#        @matches = ($root);
+#    }
+#
+#    # cache new result
+#    if (@matches) {
+#        my $pid = $matches[0];
+#        my $exe = _with_root(sub { readlink("/proc/$pid/exe") }) // '';
+#        my $cmd = read_cmdline($pid) // '';
+#        my $uid = (split /\s+/, (read_status_field($pid,'Uid')//''))[0];
+#        my $stat_raw = slurp_file("/proc/$pid/stat") // '';
+#        my @stat_fields = split ' ', $stat_raw;
+#        my $start = $stat_fields[21] || '';
+#        $CACHE{pid}{$cache_key} = {
+#            pid     => $pid,
+#            uid     => $uid,
+#            start   => $start,
+#            inode   => _exe_inode($exe),
+#            cmdhash => _cmd_hash($cmd),
+#            exp     => time + $TTL_SECONDS,
+#        };
+#    }
+#
+#    return \@matches;
+#}
 
-sub _exe_inode {
-    my ($path) = @_;
-    return unless defined $path && -e $path;
-    return (stat $path)[1];          # inode number
-}
-
-sub _cmd_hash {
-    my ($cmdline) = @_;
-    return md5_hex($cmdline // '');
-}
-
-sub find_pids {
-    my ($exe_rx, $cmd_rx, $uid_wanted) = @_;
-    croak 'Usage: find_pids($exe_regex,$cmd_regex[, $uid])'
-        unless defined $exe_rx && defined $cmd_rx;
-
-    my $key = join ',', $exe_rx, $cmd_rx, (defined $uid_wanted ? $uid_wanted : '');
-
-    # 1) Fast-path: validate cached entry
-    if (my $c = $CACHE{pid}{$key}) {
-        my $pid = $c->{pid};
-        if (-d "/proc/$pid") {
-            my $uid   = (split /\s+/, (read_status_field($pid,'Uid')//''))[0];
-            my $stat  = slurp_file("/proc/$pid/stat") // '';
-            my @p     = ($stat =~ /\(([^)]*)\)|([^\s]+)/g); @p = grep { defined } @p;
-            my $start = $p[21] // '';
-            my $exe   = readlink "/proc/$pid/exe";
-            my $cmd   = read_cmdline($pid) // '';
-
-            if (     defined $uid   && $uid   eq $c->{uid}
-                &&  defined $start && $start eq $c->{start}
-                &&  defined $exe   && _exe_inode($exe) == $c->{inode}
-                &&  $exe =~ $exe_rx
-                &&  $cmd =~ $cmd_rx
-                &&  _cmd_hash($cmd) eq $c->{cmdhash}
-                &&  time <= $c->{exp} )
-            {
-                return [ $pid ];             # cache hit is sound
-            }
-        }
-        delete $CACHE{pid}{$key};             # stale
-    }
-
-    # 2) Live scan of /proc
-    my @hits;
-    for my $pid (list_pids()) {
-        next unless -d "/proc/$pid";
-
-        my $exe = readlink("/proc/$pid/exe") // next;
-        next unless $exe =~ $exe_rx && -e $exe;
-
-        my $cmd = read_cmdline($pid) // next;
-        next unless $cmd =~ $cmd_rx;
-
-        my $uid = (split /\s+/, (read_status_field($pid,'Uid')//''))[0];
-        next if defined $uid_wanted && (!defined $uid || $uid != $uid_wanted);
-
-        push @hits, $pid;
-    }
-
-    # 3) Parent/child disambiguation (linear chain heuristic)
-    if (@hits > 1) {
-        @hits  = sort { $b <=> $a } @hits;    # newest … oldest
-        my $root = pop @hits;
-        for my $pid (@hits) {
-            my $pp = (split /\s+/, (read_status_field($pid,'PPid')//''))[0];
-            return [] unless defined $pp && $pp == $root;
-        }
-        @hits = ($root);
-    }
-
-    # 4) Cache and return
-    if (@hits) {
-        my $pid   = $hits[0];
-        my $uid   = (split /\s+/, (read_status_field($pid,'Uid')//''))[0];
-        my $stat  = slurp_file("/proc/$pid/stat") // '';
-        my @p     = ($stat =~ /\(([^)]*)\)|([^\s]+)/g); @p = grep { defined } @p;
-        my $start = $p[21] // '';
-        my $exe   = readlink "/proc/$pid/exe";
-        my $cmd   = read_cmdline($pid) // '';
-
-        $CACHE{pid}{$key} = {
-            pid     => $pid,
-            uid     => $uid,
-            start   => $start,
-            inode   => _exe_inode($exe),
-            cmdhash => _cmd_hash($cmd),
-            exp     => time + $TTL_SECONDS,
-        };
-    }
-
-    return \@hits;
-}
-
-1;  # End of PID::Lego
-
+1;
+__END__

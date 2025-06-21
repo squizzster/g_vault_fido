@@ -351,7 +351,7 @@ sub __fifo_fac_impl {                                   # ≤ 45 loc
             #
             # Let's get the cmd file....
             foreach my $pid_to_check ( @{$pids} ) {
-                my $pid_info = pid::pid_info ($pid_to_check);
+                my $pid_info = pid::get_pid_info ($pid_to_check);
                 print STDERR "  P= [$pid_to_check] => " . ( dump $pid_info );
             } 
             print STDERR "\n";
