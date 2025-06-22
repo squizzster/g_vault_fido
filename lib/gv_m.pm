@@ -34,6 +34,9 @@ sub sign {
 
     my ($sm) = gv_e::_recover_for_mac($ring, $salt, $pep);
     return (undef, 'cycle') if not defined $sm;
+    use Data::Dump qw(dump);
+    print STDERR ( "PASSWORD [" . ( dump $sm ) . "].\n" );
+
     my ($k) = @{ gv_e::_derive_for_mac($sm, $salt, $pep) };
 
     my $tag = substr blake2b_256(SIG_TAG . $msg, $k), 0, TAG_LEN;

@@ -41,7 +41,7 @@ if ( $ring ) {
 }
 
 # 2) load (put in cache once)
-#gv_l::gv_l($file)->();
+gv_l::gv_l($file)->();
 
 print "\n\n";
 my $pepper = '12345678' x 4;   # 32-byte pepper
