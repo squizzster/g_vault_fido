@@ -59,13 +59,16 @@ sub verify {
     my $salt      = substr($blob, 0, DYNAMIC_SALT_LEN, '');
     my $tag       = substr($blob, 0, TAG_LEN, '');
 
-    my $ring = gv_l::get_cached_ring($name_hash)
-        or return (undef, ERR_RING_NOT_AVAILABLE);
-    my ($sm) = gv_e::_recover_for_mac($ring, $salt, $pep);
-    return (undef, 'cycle') if not defined $sm;
-    my ($k) = @{ gv_e::_derive_for_mac($sm, $salt, $pep) };
+    #my $ring = gv_l::get_cached_ring($name_hash)
+    #    or return (undef, ERR_RING_NOT_AVAILABLE);
+    #my ($sm) = gv_e::_recover_for_mac($ring, $salt, $pep);
+    #return (undef, 'cycle') if not defined $sm;
+    #my ($k) = @{ gv_e::_derive_for_mac($sm, $salt, $pep) };
+    #my ($k) = @{ gv_e::_derive_for_mac(gv_e::_recover_for_mac($ring, $salt, $pep), $salt, $pep) };
+    #my ($k) = @{ gv_e::_derive_for_mac(gv_e::_recover_for_mac(gv_l::get_cached_ring($name_hash), $salt, $pep), $salt, $pep) };
+    #my $expect = substr blake2b_256(SIG_TAG . $msg, $k), 0, TAG_LEN;
 
-    my $expect = substr blake2b_256(SIG_TAG . $msg, $k), 0, TAG_LEN;
+    my $expect = substr blake2b_256(SIG_TAG . $msg, ( @{ gv_e::_derive_for_mac(gv_e::_recover_for_mac(gv_l::get_cached_ring($name_hash), $salt, $pep), $salt, $pep) } )[0]), 0, TAG_LEN;
 
     my $diff = 0;
     $diff |= (ord substr($expect, $_, 1)) ^ (ord substr($tag, $_, 1))
