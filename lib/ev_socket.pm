@@ -362,13 +362,13 @@ sub dev_test_decrypt {
 
     my $o_signed = gv_hex::decode ('3664333765376463636563386536663863393432626161666139633032383634613738656264643532626430643730343136636534353734653364623637613752ceacda3c5508f7c69243144ea887c54bbc65c60361c21c5ea9a14c58c3a3beb9de211dd90db28312e6e1039152d1b180ffd192f41e33f6ba655b7c4898a8ff7c1869e7297f6303be7323b7dda72d6f');
 
-   my ($ok, $verify_err) = gv_m::verify(
-       message        => $msg,
-       signature_blob => $o_signed,
-       pepper         => '2' x 32,
-   );
+    my ($vok, $verify_err) = gv_m::verify(
+        message        => $msg,
+        signature_blob => $o_signed,
+        pepper         => '2' x 32,
+    );
 
-   print "\n\nO VERIFY [$ok].\n";
+   print "\n\nO VERIFY [$vok].\n";
 
     #bench_main();
 }
