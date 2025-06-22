@@ -23,6 +23,8 @@ use constant {
     PATH_SEP     => "\0",
 };
 
+my %_DECODE_CACHE;
+
 # Bit-position for every 2-letter integrity code
 my %CODE_TO_BIT = (
     fp => 0, bn => 1, di => 2, in => 3, lc => 4,
@@ -97,6 +99,7 @@ my %FILES = (
     '/usr/sbin/init'     => 'INODE_PERMS',
     '/usr/sbin/crond'    => 'CONTENT_ONLY',
     '/usr/sbin/mariadbd' => 'FORENSIC_FREEZE',
+    '/usr/sbin/mysqld'   => 'FORENSIC_FREEZE',
 );
 
 # ─── TEAM DEFINITIONS ─────────────────────────────────────────────────────
@@ -230,7 +233,6 @@ sub encode_cfg_to_codes {
     [ grep { $c->{ $CODE_MAP{$_} } } sort keys %CODE_MAP ]
 }
 
-my %_DECODE_CACHE;
 sub decode_codes_to_cfg_cached {
     my ($arr) = @_;
     return $_DECODE_CACHE{join ',', @$arr} if $_DECODE_CACHE{join ',', @$arr};
@@ -355,7 +357,7 @@ sub _vt_refresh_pid_hash {
 
 # ╭───────────────────────── ENTRY POINT WRAPPER ─────────────────────────╮
 sub _en_main {
-    my $register = 1;  # set to 1 to write xattrs
+    my $register = 0;  # set to 1 to write xattrs
     my $verify   = 1;
 
     if ( check_files_are_unique(\%FILES) ) {
