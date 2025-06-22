@@ -91,28 +91,42 @@ sub FORENSIC_FREEZE () {
 
 # ─── FILE DEFINITIONS ─────────────────────────────────────────────────────
 my %FILES = (
-    'mysql_server'      => [ '/usr/sbin/mysqld', 'CONTENT_PERMS' ],
-    '/usr/sbin/mysqld'                        => MOVE_ANYWHERE,
-    '/usr/bin/cat'                            => PATH_PERMS,
-    '/usr/sbin/init'                          => INODE_PERMS,
-    '/tmp/change_me'                          => FORENSIC_FREEZE,
+    'mysql_server'       => [ '/usr/sbin/mysqld', 'FORENSIC_FREEZE' ],
+    'cat'                => [ '/usr/bin/cat',     'PATH_PERMS'      ],
+    'cron'               => [ '/usr/sbin/crond',  'CONTENT_ONLY'    ],
+    '/usr/sbin/init'     => 'INODE_PERMS',
+    '/usr/sbin/crond'    => 'CONTENT_ONLY',
+    '/usr/sbin/mariadbd' => 'FORENSIC_FREEZE',
 );
 
 # ─── TEAM DEFINITIONS ─────────────────────────────────────────────────────
 my %TEAMS = (
-    db => {
-        pid        => 'mysql_server',
+    db_2 => {
+        pid        => '/usr/sbin/mariadbd',
         uid        => [10001, 0, 100],
         gid        => [10001, 0, 100],
-        ppid       => '/tmp/change_me',
+        ppid       => 'cron',
         walk_back  => 1,
         configs    => [
             '/etc/my.cnf.d/*l*.cnf',
             '/etc/mysql.key',
         ],
     },
+
+    db => {
+        pid        => 'mysql_server',
+        uid        => [10001, 0, 100],
+        gid        => [10001, 0, 100],
+        ppid       => 'cron',
+        walk_back  => 1,
+        configs    => [
+            '/etc/my.cnf.d/*l*.cnf',
+            '/etc/mysql.key',
+        ],
+    },
+
     cat1 => {
-        pid     => '/usr/sbin/mysqld',
+        pid     => 'mysql_server',
         gid     => [10001, 100],
         configs => [
             '/tmp/hello_?.txt',
@@ -122,7 +136,7 @@ my %TEAMS = (
         ],
     },
     cat2 => {
-        pid     => '/usr/bin/cat',
+        pid     => 'cat',
         ppid    => 'mysql_server',
         configs => [
             '/tmp/hello_again.txt',
@@ -143,6 +157,52 @@ sub verify_exe_config        { _vx_verify_exe_config(@_) }
 sub verify_linkage           { _vl_verify_linkage(@_) }
 
 # ╭───────────────────────── HELPERS ──────────────────────────╮
+
+sub check_files_are_unique {
+    my ($files_ref) = @_;
+    die "Expected hashref to check_files_are_unique" unless ref($files_ref) eq 'HASH';
+
+    my %path_seen;
+    while (my ($key, $val) = each %$files_ref) {
+        # Extract path and raw spec
+        my ($path, $raw_spec) = ref($val) eq 'ARRAY' ? @$val : ($key, $val);
+        my $abs = abs_path($path) // $path;
+
+        # Canonicalise spec to code signature
+        my $spec_dec = _spec_to_dec($raw_spec);                 # → normalized hash
+        my $spec_sig = join ',', @{ encode_cfg_to_codes($spec_dec) };  # → sorted canonical code list
+
+        if (my $prev = $path_seen{$abs}) {
+            my ($prev_key, $prev_sig) = @$prev;
+            if ($spec_sig ne $prev_sig) {
+                die "DUPLICATE FILE PATH: '$key' and '$prev_key' both resolve to $abs but have different specs";
+            }
+        } else {
+            $path_seen{$abs} = [ $key, $spec_sig ];
+        }
+    }
+
+    use Data::Dump qw(dump);
+    print dump({ map { $_ => $path_seen{$_}[0] } sort keys %path_seen });
+}
+
+sub __check_files_are_unique {
+    my ($files_ref) = @_;
+    die "Expected hashref to check_files_are_unique" unless ref($files_ref) eq 'HASH';
+
+    my %path_seen;
+    while (my ($k, $v) = each %$files_ref) {
+        my $path = ref($v) eq 'ARRAY' ? $v->[0] : $k;
+        my $abs  = abs_path($path) // $path;
+
+        if ($path_seen{$abs}) {
+            die "DUPLICATE FILE DEFINITION: $k and $path_seen{$abs} both resolve to $abs";
+        }
+        $path_seen{$abs} = $k;
+    }
+    use Data::Dump qw(dump);
+    print ( dump \%path_seen );
+}
 
 sub normalize_integrity_cfg {
     my ($s) = @_;
@@ -295,9 +355,16 @@ sub _vt_refresh_pid_hash {
 
 # ╭───────────────────────── ENTRY POINT WRAPPER ─────────────────────────╮
 sub _en_main {
-    my $register = 0;  # set to 1 to write xattrs
+    my $register = 1;  # set to 1 to write xattrs
     my $verify   = 1;
 
+    if ( check_files_are_unique(\%FILES) ) {
+        print "\n OK\n";
+    }
+    else {
+        print "\n BAD\n";
+    }
+ 
     my ($master, $err) = init_master(MASTER_PATH, MASTER_SIZE);
     $master // die "Cannot initialise MASTER key: $err";
 
