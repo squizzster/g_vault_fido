@@ -27,6 +27,7 @@ use constant {
 my %CODE_TO_BIT = (
     fp => 0, bn => 1, di => 2, in => 3, lc => 4,
     ou => 5, og => 6, pe => 7, em => 8, fh => 9,
+    fz => 10,
 );
 my @BIT_TO_CODE = sort { $CODE_TO_BIT{$a} <=> $CODE_TO_BIT{$b} } keys %CODE_TO_BIT;
 
@@ -47,32 +48,51 @@ my %CODE_MAP = (
     fp => '_full_path',  bn => '_basename',   di => '_device_id',
     in => '_inode',      lc => '_link_count', ou => '_owner_uid',
     og => '_group_gid',  pe => '_permissions',em => '_epoch_modify',
-    fh => '_file_hash'
+    fh => '_file_hash',  fz => '_file_size',
 );
 my %ATTR_TO_CODE = reverse %CODE_MAP;
 
 sub BASENAME_ONLY   () { state $C = { _basename => 1 }; $C }
+
 sub PATH_PERMS      () { state $C = {
     _full_path   => 1, _basename    => 1,
     _owner_uid   => 1, _group_gid   => 1, _permissions => 1,
 }; $C }
+
 sub INODE_PERMS     () { state $C = {
     _device_id   => 1, _inode       => 1, _link_count  => 1,
     _full_path   => 1, _basename    => 1,
     _owner_uid   => 1, _group_gid   => 1, _permissions => 1,
 }; $C }
+
 sub CONTENT_PERMS   () { state $C = {
     _full_path   => 1, _basename    => 1,
     _owner_uid   => 1, _group_gid   => 1, _permissions => 1,
-    _file_hash   => 1,
+    _file_hash   => 1, _file_size   => 1,
 }; $C }
-sub CONTENT_ONLY    () { state $C = { _file_hash => 1 }; $C }
-sub FORENSIC_FREEZE () { state $C = { map { $_ => 1 } values %CODE_MAP }; $C }
+
+sub MOVE_ANYWHERE  () { state $C = {
+    _basename    => 1,
+    _owner_uid   => 1, _group_gid   => 1, _permissions => 1,
+    _file_hash   => 1, _file_size   => 1,
+}; $C }
+
+sub CONTENT_ONLY    () { state $C = { 
+    _file_hash => 1, 
+    _file_size => 1 
+}; $C }
+
+sub FORENSIC_FREEZE () { 
+    # Everything in CODE_MAP which should be everyting!
+    state $C = { map { $_ => 1 } values %CODE_MAP
+}; $C }
+
+## make sure everything is in ==> _vl_build_spec_name_map();
 
 # ─── FILE DEFINITIONS ─────────────────────────────────────────────────────
 my %FILES = (
     'mysql_server'      => [ '/usr/sbin/mysqld', 'CONTENT_PERMS' ],
-    '/usr/sbin/mysqld'                        => FORENSIC_FREEZE,
+    '/usr/sbin/mysqld'                        => MOVE_ANYWHERE,
     '/usr/bin/cat'                            => PATH_PERMS,
     '/usr/sbin/init'                          => INODE_PERMS,
     '/tmp/change_me'                          => FORENSIC_FREEZE,
@@ -159,7 +179,6 @@ sub decode_codes_to_cfg_cached {
     $_DECODE_CACHE{join ',', @$arr} = \%h;
 }
 sub decode_codes_to_cfg { decode_codes_to_cfg_cached($_[0]) }
-sub file_hash  { fast_file_hash::fast_file_hash(@_) }
 sub _attr          { $_[0] . '.' . $_[1] }
 sub store_team_attr { set_file_attr(@_)     }
 sub load_team_attr  { get_file_attr(@_)     }
@@ -268,7 +287,7 @@ sub _vt_refresh_pid_hash {
     return unless $exe_path;
     my $dec = decode_codes_to_cfg( $meta->{spec} );
     if (-r $exe_path) {
-        $meta->{hash} = file_hash( $exe_path, $dec );
+        $meta->{hash} = fast_file_hash::fast_file_hash( $exe_path, $dec );
     } else {
         $meta->{hash} = '';
     }
@@ -313,7 +332,7 @@ sub _vt_refresh_ppid_hash {
     my $pp_path = $pp->{path} // return;
     if (-r $pp_path) {
         my $dec = decode_codes_to_cfg($pp->{spec});
-        $pp->{hash} = file_hash($pp_path, $dec);
+        $pp->{hash} = fast_file_hash::fast_file_hash($pp_path, $dec);
     } else {
         $pp->{hash} = '';
     }
@@ -331,7 +350,7 @@ sub _rt_build_meta {
         v        => 1,
         spec     => encode_cfg_to_codes($exe_dec),
         patterns => \@patterns,
-        hash     => file_hash($exe_path, $exe_dec),    # PID hash
+        hash     => fast_file_hash::fast_file_hash($exe_path, $exe_dec),    # PID hash
     );
     $meta{ppid}      = $pp_meta          if $pp_meta;
     $meta{uid}       = $def->{uid}       if $def->{uid};
@@ -350,7 +369,7 @@ sub _rt_build_ppid_block {
     return {
         path => $pp_path,
         spec => encode_cfg_to_codes($pp_dec),
-        hash => file_hash($pp_path, $pp_dec),
+        hash => fast_file_hash::fast_file_hash($pp_path, $pp_dec),
     };
 }
 
@@ -466,7 +485,7 @@ sub _vl_build_spec_name_map {
     my %map;
     for my $name (qw(
         BASENAME_ONLY PATH_PERMS INODE_PERMS CONTENT_PERMS
-        CONTENT_ONLY FORENSIC_FREEZE
+        CONTENT_ONLY FORENSIC_FREEZE MOVE_ANYWHERE
     )) {
         no strict 'refs';
         my $dec   = &{$name}();

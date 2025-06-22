@@ -286,9 +286,21 @@ sub __fifo_fa_promote {
     my $tmp  = __fifo_fa_tmpfifo($file_path);
     my $mode = 0666 & ~(umask);
 
+    my $ok_fifo = _with_root(sub {
+        if (-e $file_path  and  not -p $file_path) {
+            return;
+        }
+        else {
+            return 1;
+        }
+    });
+
+    return error "Refusing to overwrite non-FIFO path: [$file_path]." if not  $ok_fifo;
+
     my $ok = try { _with_root(sub { mkfifo($tmp, $mode) }) }
              catch { return error "mkfifo($tmp) failed: $_" };
     return error "mkfifo returned false" unless $ok;
+
 
     my ($fh, $e) = __fifo_fa_open_handle($tmp);
     if ($e) { unlink $tmp; return error $e }

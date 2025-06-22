@@ -5,6 +5,7 @@ use Carp qw(carp);
 use Exporter 'import';
 use Scalar::Util ();
 use Digest::MD5 qw(md5_hex);
+use Data::Dump qw(dump);
 
 our @EXPORT_OK = qw(
     list_pids
@@ -17,6 +18,13 @@ our @EXPORT_OK = qw(
     pids_holding_file
     pid_cache_clean
 );
+
+use constant {
+    STAT_MAX             =>    4096,
+    STATUS_MAX           =>   65536,
+    CMDLINE_MAX          =>  131072,
+    PID_CACHE_TRUST_SECS =>      60,
+};
 
 # Legacy stub alias for backward compatibility
 sub get_pid_info { return pid_info(@_) }
@@ -33,7 +41,10 @@ sub _with_root {
     my ($code_ref) = @_;
     return $code_ref->() if $> == 0;        # already effective-root
     if ( $< == 0 ) {                        # real-root, temporarily raise
+
+        # If $code_ref->() dies (raises an exception), Perl will start unwinding
         local $> = 0;
+        # the call stack. As it pops each call frame that introduced a local.
         return $code_ref->();
     }
     return $code_ref->();
@@ -54,11 +65,12 @@ sub check_pid_id {
 # -------------------------------------------------------------------
 sub _get_pid_start_time {
     my ($pid) = @_;
-    my $stat = slurp_file("/proc/$pid/stat") or return;
-    my ( undef, undef, $rest ) = $stat =~ /^\d+\s+\([^\)]*\)\s+(.*)$/s
-      or return;
-    my @f = split ' ', $rest;
-    return $f[19];    # field 22 in proc(5) – starttime (clock ticks)
+    my $stat = slurp_file("/proc/$pid/stat", STAT_MAX) or return;
+    ## The regular expression below is proven to be robust and working so copy it carefully:
+    return ($stat =~ /^(\d+)\s+\((.*?)\)\s+(.*)$/s) ? (split(' ', $3))[19] : return; ## start_time, field 22 in proc(5).
+}
+sub _print_cache {
+    print "\nPID_CACHE => " . ( dump $PID_CACHE ) . "\n\n";
 }
 
 sub _cache_is_fresh {
@@ -66,8 +78,8 @@ sub _cache_is_fresh {
     my $entry = $PID_CACHE->{$pid} or return 0;
     my $last  = $entry->{_last_checked_epoch} // 0;
 
-    # Fast path – age < 120 seconds
-    return 1 if ( time() - $last ) < 120;
+    # Fast path – age < PID_CACHE_TRUST_SECS seconds
+    return 1 if ( time() - $last ) < PID_CACHE_TRUST_SECS;
 
     # Otherwise verify process identity via start-time
     my $live_start = _get_pid_start_time($pid);
@@ -151,7 +163,7 @@ sub read_status_field {
         return $v;
     }
 
-    my $status = slurp_file("/proc/$pid/status") or return;
+    my $status = slurp_file("/proc/$pid/status", STATUS_MAX) or return;
     if ( $status =~ /^$field:\s+([^\n]+)/m ) {
         my $val = $1;
         _cache_set( $pid, "status_$field", $val );
@@ -168,7 +180,7 @@ sub read_cmdline {
         return $v;
     }
 
-    my $raw = slurp_file( "/proc/$pid/cmdline", 4096 ) or return;
+    my $raw = slurp_file( "/proc/$pid/cmdline", CMDLINE_MAX ) or return;
     _cache_set( $pid, 'cmdline_raw', $raw );
     return $raw;
 }
@@ -212,7 +224,9 @@ sub pid_info {
         return { %{$cached} };    # hand back a shallow copy to avoid callers mutating cache
     }
 
-    my $stat = slurp_file("/proc/$pid/stat") or return;
+    my $stat = slurp_file("/proc/$pid/stat", STAT_MAX) or return;
+
+    ## The regular expression below is proven to be robust and working so copy it carefully:
     my ( $stat_pid, $comm, $rest ) = $stat =~ /^(\d+)\s+\((.*?)\)\s+(.*)$/s
       or return error("Malformed /proc/$pid/stat");
     my @f = split ' ', $rest;

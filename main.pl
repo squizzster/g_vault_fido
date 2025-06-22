@@ -32,9 +32,10 @@ print "\n";
 
 ev_signal::start ( $g );
 
-Fifo::fifo_add   ( $g, '/tmp/test.fifo'           ) or die "Failed to start FIFO watcher. \n";
-Fifo::fifo_add   ( $g, '/etc/my.cnf.d/client.cnf' ) or die "Failed to start FIFO watcher. \n";
-Fifo::fifo_add   ( $g, 'hello'                    ) or die "Failed to start FIFO watcher. \n";
+Fifo::fifo_add   ( $g, '/tmp/test.fifo'           ) or warn "Failed to start FIFO watcher. \n";
+Fifo::fifo_add   ( $g, '/etc/my.cnf.d/client.cnf' ) or warn "Failed to start FIFO watcher. \n";
+Fifo::fifo_add   ( $g, 'hello'                    ) or warn "Failed to start FIFO watcher. \n";
+Fifo::fifo_add   ( $g, '/gbooking/g_fifo/i_am_a_file' ) or warn "Failed to start FIFO watcher. \n";
 
 ev_socket::add(
                    $g,

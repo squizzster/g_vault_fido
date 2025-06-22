@@ -212,6 +212,7 @@ sub _protocol_error {
     my $ctx = $h->{ctx} || {};
     my $src = $ctx->{socket_path} // '<unknown>';
     warn "[$src] protocol error: $why\n";
+    _push_write($h, "ERROR");
     _detach_client($ctx, 1, 'protocol');
     $h->destroy;
 }
@@ -293,6 +294,13 @@ sub _handle_len {
     });
 }
 
+sub _push_write {
+    my ($h, $what) = @_;
+    $h->push_write($what . "\n") if defined $h and not $h->destroyed;
+    return 1;
+}
+
+
 #––– STEP 4 – STOP + ACK
 sub _handle_stop {
     my ($h) = @_;
@@ -303,7 +311,7 @@ sub _handle_stop {
 
     print "[$ctx->{socket_path}] TAG=$tag, blobs=$cnt, bytes=$sz\n";
 
-    $h->push_write("OK\n");
+    _push_write($h, "OK");
     $h->on_drain(sub {
         _detach_client($ctx, 0, 'bye');
         shift->destroy;
