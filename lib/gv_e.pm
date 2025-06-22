@@ -111,6 +111,7 @@ my $_derive_aead_params = sub {
 
 my $_derive_mac_key = sub {
     my ($sm,$salt,$pep)=@_;
+    return if not defined $sm;
     my $ikm = DS_IKM_MAC . $sm . $pep;
     my $k   = hkdf($ikm, DERIVE_SALT_PREFIX_3 . $salt, 'BLAKE2b_256', 32, DS_INFO_MAC_KEY);
     [$k];
