@@ -45,7 +45,7 @@ ev_socket::add(
                    abstract  => 1,           # 0 or 1 (abstract namespace)
                    rbuf_max  => 8 * 1024,    # read buffer (bytes)
                    wbuf_max  => 8 * 1024,    # write buffer (bytes)
-                   timeout   => 0.5,         # connection timeout (seconds, can be 0)
+                   timeout   => 0.25,        # connection timeout (seconds, can be 0)
 );
 
 print "\n[START] [$$].\n";

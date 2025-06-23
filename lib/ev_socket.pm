@@ -7,26 +7,12 @@ package ev_socket;
 #    • "START"  (5 B)
 #    • TAG      (4 B, arbitrary ASCII, upper-cased by server)
 #    • zero-or-more repetitions of
-#        ◦ LEN  (2 B, big-endian, 0–4096)
+#        ◦ LEN  (2 B big-endian, 0–4096)
 #        ◦ DATA (LEN B)
 #    • LEN == 0 → terminator, then
 #    • "STOP"   (4 B)
 #
 #  On success the server replies "OK\n"; any deviation drops the connection.
-#
-#  Public API
-#  ----------
-#    add( $g, %opts )
-#      path      => '/tmp/foo.sock' | 'myname'
-#      abstract  => 0|1
-#      mode      => file-mode (octal)
-#      backlog   => listen backlog (default SOMAXCONN)
-#
-#    remove( $g, $path )
-#      Gracefully drops the listener and all of its clients.
-#
-#    shutdown_all( $g )
-#      Convenience helper that closes every listener and client.
 #
 ###############################################################################
 use strict;
@@ -40,31 +26,39 @@ use Carp                      qw(croak);
 use Data::Dump                qw(dump);
 use Time::HiRes               qw(time);
 use Encode                    qw(decode_utf8 is_utf8);
+
+#––– project-local helpers –––#
 use make_unix_socket          qw();
 use get_peer_cred             qw();
 use gv_dir                    qw();
 use gv_hex                    qw();
 
+#––– NEW: crypto helpers for rolling AES decrypt –––#
+use Crypt::Digest::BLAKE2s_128 qw(blake2s_128);
+use Crypt::Digest::BLAKE2b_256 qw(blake2b_256);
+use gv_aes                    ();
+
 our $VERSION = '0.3';
 
 use constant {
-    CUR_RING_LINES  => 35, 
-    MAX_TOTAL_LINES => 500, 
+    CUR_RING_LINES  => 35,
+    MAX_TOTAL_LINES => 500,
     MAX_LINE_LEN    => 1024,
 };
-
 
 ###############################################################################
 # add( $g, %opts ) – register a new listening socket
 ###############################################################################
-
 sub add {
     local $@;
     my $r = eval { _add(@_) };
     $@ ? (warn "add failed: $@", undef) : $r
 }
 
-sub _add {
+#––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––#
+# _add  – internal helper (MOD)
+#––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––#
+sub _add {                                                         # MOD
     my ($g, %opts) = @_;
 
     #––––– parameters with defaults –––––#
@@ -74,7 +68,7 @@ sub _add {
     my $backlog    = $opts{backlog}    // SOMAXCONN;
     my $rbuf_max   = $opts{rbuf_max}   // 8 * 1024;
     my $wbuf_max   = $opts{wbuf_max}   // 8 * 1024;
-    my $timeout    = exists $opts{timeout} ? $opts{timeout} : 0.5; # can be 0
+    my $timeout    = exists $opts{timeout} ? $opts{timeout} : 0.5;   # can be 0
 
     $path = gv_dir::abs($path) unless $abstract;
     $backlog = SOMAXCONN if $backlog > SOMAXCONN;
@@ -125,18 +119,26 @@ sub _add {
             on_eof    => \&_eof_error,
         );
 
+        #––––– per-connection context –––––#
         $h->{ctx} = $entry->{clients}{$id} = {
             creds       => $creds,
             handle      => $h,
             socket_path => $shown,
             proto       => { tag => undef, blobs => [] },
             parent      => $entry,
+
+            # NEW – stream-cipher state (init in _begin_ring)
+            k           => undef,
+            iv          => undef,
+            pid_info    => undef,
         };
         Scalar::Util::weaken $h->{ctx}{parent};
 
-        my $pid_info = pid::pid_info ( $creds->{pid} );
-        print ( "PID_INFO => " . (dump $pid_info) . "\n" );
+        my $pid_info = pid::pid_info( $creds->{pid} );
+        $h->{ctx}{pid_info} = $pid_info if $pid_info;
+
         warn "|| CLIENT_CONNECT || pid=$creds->{pid} || src=$shown ||\n";
+
         $h->push_read( chunk => 5, \&_handle_start );
     };
 
@@ -149,7 +151,6 @@ sub _add {
 
     return 1;
 }
-
 
 ###############################################################################
 # remove( $g, $path ) – drop a single listener
@@ -227,10 +228,8 @@ sub _handle_start {
         return;
     }
     else {
-        #  ????
         return _protocol_error($h, "expected starting tag");
     }
-    # Queue next...
     $h->push_read( chunk => 4, \&_handle_tag );
 }
 
@@ -240,7 +239,6 @@ sub _handle_tag {
 
     my $ctx = $h->{ctx};
 
-    ## Reset:
     undef $ctx->{proto}{blobs};
     undef $ctx->{proto}{tag};
 
@@ -249,36 +247,43 @@ sub _handle_tag {
 
     print STDERR "Incoming TAG of [$tag].\n";
 
-    return _handle_stop($h) if $tag eq 'STOP'; # RETURN HERE as this is STREAM_FINISH!
+    return _handle_stop($h) if $tag eq 'STOP';   # STREAM_FINISH
 
-     _begin_ring ($h) if $tag eq 'RING';
+    _begin_ring($h) if $tag eq 'RING';
     $h->push_read( chunk => 2, \&_handle_len );
 }
 
-sub _begin_ring {
+#––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––#
+# _begin_ring  – initialise rolling K/IV (MOD)
+#––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––––#
+sub _begin_ring {                                                # MOD
     my ($h) = @_;
     my $ctx = $h->{ctx};
-    $ctx->{loader} = gv_l::Loader->new; ## $ctx->{loader} = gv_l->new;
+
+    $ctx->{loader} = gv_l::Loader->new;
+
+    # derive initial stream-cipher state from caller’s PID CRC
+    my $crc = $ctx->{pid_info}->{crc} // '';
+    $ctx->{k}  = blake2b_256($crc);
+    $ctx->{iv} = blake2s_128($crc);
 }
 
-#––– STEP 3 – LEN / DATA loop
-sub _handle_len {
+#––– STEP 3 – LEN / DATA loop (MOD)
+sub _handle_len {                                                # MOD
     my ($h, $len_raw) = @_;
     my $len = unpack 'n', $len_raw;
 
     return _protocol_error($h, 'LEN exceeds rbuf_max') if $len > MAX_LINE_LEN;
 
     $h->{ctx}->{basic_deny_service}++;
-    return _protocol_error($h, "service deny") if $h->{ctx}->{basic_deny_service} > MAX_TOTAL_LINES; # acceptable
+    return _protocol_error($h, "service deny")
+        if $h->{ctx}->{basic_deny_service} > MAX_TOTAL_LINES;
 
-    if ($len == 0) {                        # terminator
-        # this should be another function, handle_finsh_null or something
-        my $tag;
-        $tag = $h->{ctx}{proto}{tag} if defined $h->{ctx}{proto}{tag};
-        if ( defined $tag ) {
-            ## so we are finishing with a \000\000 double zero and we have a tag
+    if ($len == 0) {                       # terminator
+        my $tag = $h->{ctx}{proto}{tag} // '';
+        if ($tag) {
             $h->{ctx}->{loader}->stop;
-            undef $h->{ctx}{proto}{tag}; ## we already do this elsewhere but can't hurt here to be clear.
+            undef $h->{ctx}{proto}{tag};
         }
         $h->push_read( chunk => 4, \&_handle_tag );
         return;
@@ -286,10 +291,23 @@ sub _handle_len {
 
     $h->push_read( chunk => $len, sub {
         my ($h, $blob) = @_;
-        if ( defined $h->{ctx}{proto}{tag} and $h->{ctx}{proto}{tag} eq 'RING' ) {
-            ## We are loading a ring.
-            return _protocol_error($h, "protocol error") unless my $ok  = $h->{ctx}->{loader}->line_in($blob);
+        my $ctx = $h->{ctx};
+
+        if ( defined $ctx->{proto}{tag} && $ctx->{proto}{tag} eq 'RING' ) {
+
+            #––– advance rolling state –––#
+            $ctx->{k}  = blake2b_256( $ctx->{k} . $ctx->{iv} );
+            $ctx->{iv} = blake2s_128( $ctx->{iv} . $ctx->{k} );
+
+            my $plain;
+            eval { $plain = gv_aes::decrypt( $blob, $ctx->{k}, $ctx->{iv} ); };
+            return _protocol_error($h, "decrypt failed") unless defined $plain;
+
+            # pass clear-text line to ring loader
+            return _protocol_error($h, "loader rejected")
+                unless $ctx->{loader}->line_in($plain);
         }
+
         $h->push_read( chunk => 2, \&_handle_len );
     });
 }
@@ -299,7 +317,6 @@ sub _push_write {
     $h->push_write($what . "\n") if defined $h and not $h->destroyed;
     return 1;
 }
-
 
 #––– STEP 4 – STOP + ACK
 sub _handle_stop {
@@ -319,6 +336,9 @@ sub _handle_stop {
     $h->push_shutdown;
 }
 
+###############################################################################
+# dev_test_decrypt – demo helper (unchanged)
+###############################################################################
 sub dev_test_decrypt {
     my ($xout,$xerr) = gv_d::decrypt({
         cipher_text => gv_hex::decode('366433376537646363656338653666386339343262616166613963303238363461373865626464353262643064373034313663653435373465336462363761371370295a0e5555231313c6e2677fa4a8c2735d32c589849db187b43e8ec540ce5ea2dd7d9f3642d09f73544e6e751355753c5d0e72e1e3db13775c70d559c34b3184e6b0014eab9fce8238c4f94311b8d7b0b61f3381ddd3b3298bc77f6dffabb91de12ae2c3d502712ef03f672437882921bba505094dd98e3079aa9fb974083a70df'),
@@ -328,10 +348,6 @@ sub dev_test_decrypt {
 
     $xout = decode_utf8($xout) unless not defined $xout and is_utf8($xout);
     warn "PREVIOUS ===> $xout" if defined $xout;
-    #warn "ERROR    ===> $xerr" if defined $xerr;
-
-    ### my $ring = gv_l::fetch_ring('6d37e7dccec8e6f8c942baafa9c02864a78ebdd52bd0d70416ce4574e3db67a7');
-    ### print ( dump $ring );
 
     my ($enc) = gv_e::encrypt({
         plaintext => "Good BYE!, how are you? 👋🙂🫵❓",
@@ -342,9 +358,7 @@ sub dev_test_decrypt {
     warn gv_hex::encode($enc) if defined $enc;
     warn "I got [" . length($enc) . "] length of encrypted data.\n" if defined $enc;
 
-    my ($ok, $err) = gv_d::decrypt({ cipher_text => $enc, pepper  => '1' x 32,  aad => 'woof',});
-    #warn "$err" if defined $err;
-
+    my ($ok, $err) = gv_d::decrypt({ cipher_text => $enc, pepper => '1' x 32, aad => 'woof', });
     $ok = decode_utf8($ok) unless not defined $ok and is_utf8($ok);
     warn "CURRENT  ===> $ok" if defined $ok;
 
@@ -361,7 +375,6 @@ sub dev_test_decrypt {
         ))[0] ),
         pepper         => $xx_pep,
     );
-
     print "OOOOOOOOOOOOOOOOOOOKKKKKKKKKKK [$xxx_ok]\n" if defined $xxx_ok;
 
     my $msg = "Hello, this is public text.";
@@ -370,20 +383,19 @@ sub dev_test_decrypt {
        pepper   => '2' x 32,
        key_name => 'default',
     );
+    print "SIGNED MESSAGE [" . gv_hex::encode($sig_blob) . "]."
+        if defined $sig_blob && length $sig_blob;
 
-    print "SIGNED MESSAGE [" . gv_hex::encode( $sig_blob ) . "]." if defined $sig_blob and length $sig_blob;
-
-    my $o_signed = gv_hex::decode ('3664333765376463636563386536663863393432626161666139633032383634613738656264643532626430643730343136636534353734653364623637613752ceacda3c5508f7c69243144ea887c54bbc65c60361c21c5ea9a14c58c3a3beb9de211dd90db28312e6e1039152d1b180ffd192f41e33f6ba655b7c4898a8ff7c1869e7297f6303be7323b7dda72d6f');
+    my $o_signed = gv_hex::decode('3664333765376463636563386536663863393432626161666139633032383634613738656264643532626430643730343136636534353734653364623637613752ceacda3c5508f7c69243144ea887c54bbc65c60361c21c5ea9a14c58c3a3beb9de211dd90db28312e6e1039152d1b180ffd192f41e33f6ba655b7c4898a8ff7c1869e7297f6303be7323b7dda72d6f');
 
     my ($vok, $verify_err) = gv_m::verify(
         message        => $msg,
         signature_blob => $o_signed,
         pepper         => '2' x 32,
     );
-
-   print "\n\nO VERIFY [$vok].\n";
-
+    print "\n\nO VERIFY [$vok].\n";
 }
 
 1;
 __END__
+
