@@ -341,13 +341,14 @@ sub _handle_stop {
 ###############################################################################
 sub dev_test_decrypt {
     my ($xout,$xerr) = gv_d::decrypt({
-        cipher_text => gv_hex::decode('366433376537646363656338653666386339343262616166613963303238363461373865626464353262643064373034313663653435373465336462363761371370295a0e5555231313c6e2677fa4a8c2735d32c589849db187b43e8ec540ce5ea2dd7d9f3642d09f73544e6e751355753c5d0e72e1e3db13775c70d559c34b3184e6b0014eab9fce8238c4f94311b8d7b0b61f3381ddd3b3298bc77f6dffabb91de12ae2c3d502712ef03f672437882921bba505094dd98e3079aa9fb974083a70df'),
+        cipher_text => gv_hex::decode('36643337653764636365633865366638633934326261616661396330323836346137386562646435326264306437303431366365343537346533646236376137ad0143e86babfc4ec34bd91bcb8bdb29c88e4ff1578fce7b4d02cff547614ad87be7bff09f2d43e0bc523552414f309dcb5bd0cdf76a76b5eb3716786e18869f66951e872715f0c81221d3259b0a0e7224641dfef75cb4d2e26b696c369f4de2e430324d2af44039e17cc96160be9b95667573c2e29bc5b24cdbceb674e215bf731280'),
         pepper      => '1' x 32,
         aad         => 'woof',
     });
 
     $xout = decode_utf8($xout) unless not defined $xout and is_utf8($xout);
     warn "PREVIOUS ===> $xout" if defined $xout;
+    warn "PREVIOUS ERROR ===> $xerr" if defined $xerr;
 
     my ($enc) = gv_e::encrypt({
         plaintext => "Good BYE!, how are you? 👋🙂🫵❓",

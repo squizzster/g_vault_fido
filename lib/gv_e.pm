@@ -1,5 +1,5 @@
 package gv_e;
-use v5.24;
+use v5.14;
 use strict;
 use warnings;
 use Scalar::Util qw(refaddr);
@@ -8,7 +8,6 @@ use Crypt::AuthEnc::ChaCha20Poly1305 qw(chacha20poly1305_encrypt_authenticate);
 use Crypt::KeyDerivation             qw(hkdf);
 use Crypt::Digest::BLAKE2b_256       qw(blake2b_256 blake2b_256_hex);
 use Crypt::Digest::BLAKE2b_512       qw(blake2b_512);
-use Carp qw(croak);
 
 use constant {
     VERSION                     => 'V1',
@@ -48,16 +47,12 @@ my $_undo = sub { my ($m,$p,$b)=@_;
     return (~$b) & 0xFF;
 };
 
-# internal
 # --- faster, zero-copy version -------------------------------------
 my $_recover = sub {
     my ($ring, $salt, $pepper) = @_;
 
     # sanity checks ­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­
-    use Data::Dumper qw(Dumper);
-    print ( Dumper $ring );
-    print "\nRING IS " . (ref $ring ) . "\n";
-    #return (undef, 'bad ring')   unless ( ref $ring eq 'gv_l::Ring' );
+    return (undef, 'bad ring')   if not defined $ring or ref($ring) eq 'ARRAY';
     return (undef, 'bad salt')   if length($salt)   != DYNAMIC_SALT_LEN;
     return (undef, 'bad pepper') if length($pepper) != PEPPER_LEN;
 
@@ -84,7 +79,6 @@ my $_recover = sub {
             return (undef, ERR_INTERNAL_STATE . ' Node recovery failed: Invalid data from node.');
         }
 
-        # undo node-level obfuscation
         my $orig  = $_undo->( @d{qw(mode param stored_byte)} );
 
         # salt- & pepper-mix

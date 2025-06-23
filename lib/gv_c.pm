@@ -1,5 +1,5 @@
 package gv_c;
-use v5.24;
+use v5.14;
 use strict;
 use warnings;
 
@@ -10,7 +10,6 @@ use Carp                     qw(croak);
 use Crypt::Digest::BLAKE2b_256 qw(blake2b_256 blake2b_256_hex);
 use Crypt::Digest::BLAKE2b_512 ();    # only for side-channel-free RNG seeding in gv_random
 use Crypt::Mode::CBC;
-use List::Util              qw(shuffle);   # Fisher–Yates (core since 5.7.3)
 use Scalar::Util            qw(weaken);
 
 #######################################################################
@@ -25,6 +24,23 @@ use constant {
     BLAKE_NAME_TAG    => pack('H*', 'ee4bcef77cb49c70f31de849dccaab24'),
     BLAKE_MASTER_TAG  => pack('H*', '915196c5c43ca9a1da54cdce59804793'),
 };
+
+#######################################################################
+# Deterministic permutation helper
+#   Given $key (scalar of any length) and N, returns an array @perm
+#   such that @perm is a permutation of 0 .. N-1.
+#######################################################################
+sub _deterministic_perm {
+    my ($key, $n) = @_;
+    my @pairs = map {
+        # Calculate 128-bit prefix of BLAKE2b(key ‖ “PERM” ‖ i32be)
+        my $h = substr blake2b_256($key . "PERM" . pack('N', $_)), 0, 16;
+        [ $h, $_ ]
+    } 0 .. $n - 1;
+
+    # Sort by hash; extract original indices.
+    return map { $_->[1] } sort { $a->[0] cmp $b->[0] } @pairs;
+}
 
 #######################################################################
 # Helper: best-effort zeroiser (Perl offers no strong guarantees)
@@ -140,15 +156,12 @@ sub build_cipher_ring {
     # Fisher–Yates shuffle – randomises traversal order
     ###################################################################
 
-    my @perm = shuffle( 0 .. $#closures );          # random permutation
+    my @perm = _deterministic_perm( Crypt::Digest::BLAKE2b_512::blake2b_512( $name . $master), scalar @closures);
 
     @closures      = @closures[      @perm ];
     @next_ref      = @next_ref[      @perm ];
     @next_iv_ref   = @next_iv_ref[   @perm ];
     @iv            = @iv[            @perm ];       # keep IV alignment for next_iv
-
-    # Optional: random rotation so start node is also random *among* shuffled list.
-    # Fisher–Yates already gives us that (first element random), so no extra work.
 
     ###################################################################
     # Relink according to new order – build a Hamiltonian cycle

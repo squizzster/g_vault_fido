@@ -1,20 +1,6 @@
-############################################################################
-# gv_l.pm – cipher-ring loader  rev-E3  (2025-06-23, experimental stealth)
-#
-#  ◇  Goals
-#     • Keep ‘name’ and ‘name_hash’ public.
-#     • Hide every other field/key/variable name.
-#     • Minimise identifiable strings in RAM (randomised pad vars, no hints).
-#  ◇  Summary of tricks
-#     • Nodes array stored under a one-off random key per ring.
-#     • `nodes` discovers that key lazily (memoised) — no “_k_nodes”.
-#     • Each encrypted node becomes a closure built via `eval`, with
-#       random pad names (lexicals) that disappear after first use.
-#     • Keys/IV/tag copies wiped once validated.
-############################################################################
 package gv_l;
 
-use v5.24;           # enables 'state' plus strict subs
+use v5.14; 
 use strict;
 use warnings;
 
@@ -23,17 +9,11 @@ use Crypt::Digest::BLAKE2b_256 ();
 use Crypt::Misc                ();   # decode_b64()
 use Scalar::Util               ();   # weaken()
 
-########################################################################
-# Constants
-########################################################################
 use constant {
     MAC_LEN => 16,
     IV_LEN  => 16,
 };
 
-########################################################################
-# Global cache  { name_hash_hex → Ring object }
-########################################################################
 my $CR7 = {};
 
 sub cache_ring   { $CR7->{ $_[0] } = $_[1] }
@@ -52,6 +32,7 @@ sub drop_ring {
 *stash_ring        = \&cache_ring;
 *clear_cached_ring = \&drop_ring;
 
+
 ########################################################################
 # Helpers – copy-on-write-safe duplication & wiping
 ########################################################################
@@ -64,6 +45,7 @@ sub _wipe_scalar {
     vec($$ref, $_, 8) = 0 for 0 .. length($$ref) - 1;
     undef $$ref;
 }
+
 
 ########################################################################
 # gv_l::Loader – transient builder
@@ -81,7 +63,7 @@ use constant {
     BLAKE_NAME_TAG => pack('H*', 'ee4bcef77cb49c70f31de849dccaab24'),
 };
 
-#—– random 8-hex helper –––––––––––––––––––––––––––––––––––––––––––––––
+#—– random 8-hex helper ––––––––––––––––––––––––––––––––––––––––––––––
 sub _rnd8 { substr Crypt::Digest::BLAKE2b_256::blake2b_256_hex( rand() . $$ . time ), 0, 8 }
 
 sub new {
@@ -292,21 +274,23 @@ sub stop {
     # prime each closure once (zero-after-load)
     $_->() for @{ $self->{closures} };
 
-    # ── Dynamic ring package & minimal keys ──────────────────────────
-    my $rnd_key  = _rnd8();                    # random key for nodes array
-    my $ring_pkg = "gv_l::" . _rnd8();         # anonymous subclass
+    # ── Dynamic ring package & TIE layer –––––––––––––––––––––─────────
+    my $ring_pkg = "gv_l::" . _rnd8();      # anonymous subclass
 
     {
         no strict 'refs';
         @{$ring_pkg . '::ISA'} = ('gv_l::Ring');
     }
 
-    my $ring = bless {
-        f         => $self->{closures}[0],          # kept for compatibility
-        $rnd_key  => [ @{ $self->{closures} } ],    # hidden nodes array
-        name      => "" . $self->{name},
-        name_hash => "" . $self->{name_hash},
-    }, $ring_pkg;
+    # build a tied, key-less hash wrapper
+    my %h;                                     # visible hash stays empty
+    tie %h, 'gv_l::Ring::Tie',
+        $self->{closures}[0],                  # index 0  – head (f)
+        [ @{ $self->{closures} } ],            # index 1  – all nodes
+        "" . $self->{name},                    # index 2  – plain name
+        "" . $self->{name_hash};               # index 3  – name hash
+
+    my $ring = bless \%h, $ring_pkg;
 
     gv_l::cache_ring( $self->{name_hash}, $ring );
     Carp::carp sprintf '[SUCCESS] Loaded [%s] ring @%s.', $self->{name}, $ring_pkg;
@@ -329,6 +313,49 @@ sub _secure_wipe {
 sub DESTROY { shift->_secure_wipe }
 
 ########################################################################
+# gv_l::Ring::Tie – *unlabelled* storage
+########################################################################
+package gv_l::Ring::Tie;          # array-based, zero keys visible
+
+use strict;
+use warnings;
+use Carp ();
+
+# 0 = head closure  (f)
+# 1 = [ nodes ]
+# 2 = name
+# 3 = name_hash
+
+sub TIEHASH { bless [ @_[1..4] ], $_[0] }
+
+sub FETCH {
+    my ($self, $key) = @_;
+    return $self->[0] if $key eq 'f';          # compat with old code
+    return $self->[1] if $key eq 'nodes';      # rarely used directly
+    return $self->[2] if $key eq 'name';
+    return $self->[3] if $key eq 'name_hash';
+    return undef;
+}
+
+sub STORE  { Carp::croak('gv_l::Ring is read-only') }
+sub DELETE { Carp::croak('gv_l::Ring is read-only') }
+sub CLEAR  { Carp::croak('gv_l::Ring is read-only') }
+sub EXISTS { $_[1] =~ /^(?:f|name|name_hash|nodes)$/ }
+
+# hide even iterator introspection
+sub FIRSTKEY { undef }
+sub NEXTKEY  { undef }
+
+# secure wipe invoked by $ring->__scrub
+sub _scrub {
+    my ($self) = @_;
+    $self->[0] = undef;
+    @{ $self->[1] } = ();
+    $self->[1] = undef;
+    $_ = '' for @$self[2,3];
+}
+
+########################################################################
 # gv_l::Ring – lightweight container (base class)
 ########################################################################
 package gv_l::Ring;
@@ -337,35 +364,29 @@ use strict;
 use warnings;
 use Carp ();
 
-# nodes() – find the (only) arrayref slot that isn’t name/name_hash/f
+# nodes() – swift access via the tied array (index 1)
 sub nodes {
     my ($self) = @_;
-
-    # memoise per class for speed
-    state %memo;
-    my $class = ref $self;
-    unless (exists $memo{$class}) {
-        my ($k) = grep {
-            $_ ne 'name'      &&
-            $_ ne 'name_hash' &&
-            $_ ne 'f'         &&
-            ref $self->{$_} eq 'ARRAY'
-        } keys %$self;
-        $memo{$class} = $k // Carp::croak('nodes array not found');
-    }
-    return @{ $self->{ $memo{$class} } };
+    my $t = tied %$self or Carp::croak('ring not tied');
+    return @{ $t->[1] };
 }
 
-# wipe everything except name + name_hash
+# f() – original entrypoint preserved (no longer stored visibly)
+sub f { (tied %{$_[0]})->[0] }
+
+# name / name_hash accessors (were naked keys, now methods)
+sub name       { (tied %{$_[0]})->[2] }
+sub name_hash  { (tied %{$_[0]})->[3] }
+
+# wipe everything except the (already empty) shell
 sub __scrub {
     my ($self) = @_;
-    foreach my $k (keys %$self) {
-        next if $k eq 'name' || $k eq 'name_hash';
-        if (ref $self->{$k} eq 'ARRAY') {
-            @{ $self->{$k} } = ();
-        }
-        $self->{$k} = undef;
-    }
+    return unless tied %$self;
+    {              
+        my $tie = tied %$self;
+        $tie->_scrub;
+    }             
+    untie %$self; 
 }
 
 sub DESTROY { shift->__scrub }

@@ -67,6 +67,7 @@ sub setup_and_build_ring {
         name          => $ring_name,
         master_secret => pack('H*', $master_hex),
     );
+    print "\n\n ===> [$master_hex] <====\n\n";
     die "build_cipher_ring failed: $err\n" if $err;
     my $sock = IO::Socket::UNIX->new(
         Type => SOCK_STREAM(),

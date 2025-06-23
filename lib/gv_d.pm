@@ -1,5 +1,5 @@
 package gv_d;
-use v5.24;
+use v5.14;
 use strict;
 use warnings;
 
@@ -54,7 +54,7 @@ sub decrypt {
             $salt,
             $pepper
         ) };
-        1;  # make sure eval returns true on success
+        1;  # returns true on success
     } or do {
         return (undef,ERR_DECRYPTION_FAILED);
     };
