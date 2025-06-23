@@ -1,16 +1,27 @@
 ############################################################################
-# gv_l.pm – cipher-ring loader  rev-E0  (2025-06-23, experimental stealth)
+# gv_l.pm – cipher-ring loader  rev-E3  (2025-06-23, experimental stealth)
+#
+#  ◇  Goals
+#     • Keep ‘name’ and ‘name_hash’ public.
+#     • Hide every other field/key/variable name.
+#     • Minimise identifiable strings in RAM (randomised pad vars, no hints).
+#  ◇  Summary of tricks
+#     • Nodes array stored under a one-off random key per ring.
+#     • `nodes` discovers that key lazily (memoised) — no “_k_nodes”.
+#     • Each encrypted node becomes a closure built via `eval`, with
+#       random pad names (lexicals) that disappear after first use.
+#     • Keys/IV/tag copies wiped once validated.
 ############################################################################
 package gv_l;
 
-use v5.24;
+use v5.24;           # enables 'state' plus strict subs
 use strict;
 use warnings;
 
 use Carp                       ();
 use Crypt::Digest::BLAKE2b_256 ();
-use Crypt::Misc                ();      # decode_b64()
-use Scalar::Util               ();      # weaken()
+use Crypt::Misc                ();   # decode_b64()
+use Scalar::Util               ();   # weaken()
 
 ########################################################################
 # Constants
@@ -21,7 +32,7 @@ use constant {
 };
 
 ########################################################################
-# Global cache  { name_hash_hex → gv_l::Ring::<rnd> }
+# Global cache  { name_hash_hex → Ring object }
 ########################################################################
 my $CR7 = {};
 
@@ -42,7 +53,7 @@ sub drop_ring {
 *clear_cached_ring = \&drop_ring;
 
 ########################################################################
-# Helpers – COW-safe duplication & wiping
+# Helpers – copy-on-write-safe duplication & wiping
 ########################################################################
 sub _dup_nocow { "" . $_[0] }          # self-concat forces fresh PV
 
@@ -61,8 +72,8 @@ package gv_l::Loader;
 
 use strict;
 use warnings;
-use Crypt::Mode::CBC   ();
-use Carp               ();
+use Crypt::Mode::CBC ();
+use Carp ();
 
 use constant {
     MAC_LEN        => 16,
@@ -70,8 +81,8 @@ use constant {
     BLAKE_NAME_TAG => pack('H*', 'ee4bcef77cb49c70f31de849dccaab24'),
 };
 
-#—– random 8-hex helper ––––––––––––––––––––––––––––––––––––––––––––––
-sub _rnd8 { substr Crypt::Digest::BLAKE2b_256::blake2b_256_hex(rand().$$.time),0,8 }
+#—– random 8-hex helper –––––––––––––––––––––––––––––––––––––––––––––––
+sub _rnd8 { substr Crypt::Digest::BLAKE2b_256::blake2b_256_hex( rand() . $$ . time ), 0, 8 }
 
 sub new {
     my ($class) = @_;
@@ -202,7 +213,7 @@ sub line_in {
     return $self->_fail('CT not block-aligned') unless length($ct) % IV_LEN() == 0;
 
     my ($iv_l, $ct_l, $tag_l) = map { gv_l::_dup_nocow($_) } ($iv, $ct, $tag);
-    gv_l::_wipe_scalar($_) for (\$iv, \$ct, \$tag);
+    gv_l::_wipe_scalar(\$_) for \$iv, \$ct, \$tag;
 
     my $idx = $self->{nodes}++;
     my $cbc = Crypt::Mode::CBC->new('AES', 1);
@@ -217,35 +228,41 @@ sub line_in {
     push @{ $self->{next_ref} }, \$next;
     push @{ $self->{next_iv}  }, \$next_iv;
 
-    # ── Build *stealth* closure – very small pad names ───────────────
-    my $closure = do {
-        my ($a, $b, $c) = ($iv_l, $ct_l, $tag_l);    # iv / ct / tag
-        my (%d, $e);                                 # memo / done
+    # ── Build *stealth* closure – random pad names via eval –––––––––––
+    my ($v_iv, $v_ct, $v_tag, $v_mac, $v_aes, $v_d, $v_e) = map { '_' . _rnd8() } 1 .. 7;
 
+    my $closure_code = <<"EOC";
+        my \$$v_iv  = \$iv_l;
+        my \$$v_ct  = \$ct_l;
+        my \$$v_tag = \$tag_l;
+        my \$$v_mac = \$mac_k;
+        my \$$v_aes = \$aes_k;
+        my %$v_d;
+        my \$$v_e;
         sub {
-            return %d if $e;
-
+            return %$v_d if \$$v_e;
             substr(
-                Crypt::Digest::BLAKE2b_256::blake2b_256($mac_k.$a.$b),
+                Crypt::Digest::BLAKE2b_256::blake2b_256(\$$v_mac.\$$v_iv.\$$v_ct),
                 0, MAC_LEN()
-            ) eq $c or return;                       # silent fail
-
-            my ($i,$s,$m,$p) = unpack 'nC3', $cbc->decrypt($b,$aes_k,$a);
-
-            %d = (
-                index       => $i,
-                stored_byte => $s,
-                mode        => $m,
-                param       => $p,
-                next_node   => $next,
-                next_iv     => $next_iv,
+            ) eq \$$v_tag or return;      # silent fail on MAC
+            my (\$i, \$s, \$m, \$p) = unpack 'nC3',
+                \$cbc->decrypt(\$$v_ct, \$$v_aes, \$$v_iv);
+            %$v_d = (
+                index       => \$i,
+                stored_byte => \$s,
+                mode        => \$m,
+                param       => \$p,
+                next_node   => \$next,
+                next_iv     => \$next_iv,
             );
-            $e = 1;
+            \$$v_e = 1;
+            gv_l::_wipe_scalar(\$_) for ( \\\$$v_iv, \\\$$v_ct, \\\$$v_tag, \\\$$v_mac, \\\$$v_aes );
+            %$v_d;
+        }
+EOC
 
-            gv_l::_wipe_scalar($_) for (\$a,\$b,\$c,\$mac_k,\$aes_k);
-            %d;
-        };
-    };
+    my $closure = eval $closure_code
+        or return $self->_fail("eval error in closure: $@");
 
     # link to previous node
     if ($idx > 0) {
@@ -276,8 +293,8 @@ sub stop {
     $_->() for @{ $self->{closures} };
 
     # ── Dynamic ring package & minimal keys ──────────────────────────
-    my $rnd_key   = _rnd8();                  # numeric   key for nodes array
-    my $ring_pkg  = "gv_l::" . _rnd8(); # anonymous subclass
+    my $rnd_key  = _rnd8();                    # random key for nodes array
+    my $ring_pkg = "gv_l::" . _rnd8();         # anonymous subclass
 
     {
         no strict 'refs';
@@ -289,7 +306,6 @@ sub stop {
         $rnd_key  => [ @{ $self->{closures} } ],    # hidden nodes array
         name      => "" . $self->{name},
         name_hash => "" . $self->{name_hash},
-        _k_nodes  => $rnd_key,                      # internal hint (not used)
     }, $ring_pkg;
 
     gv_l::cache_ring( $self->{name_hash}, $ring );
@@ -307,8 +323,7 @@ sub _secure_wipe {
     gv_l::_wipe_scalar(\$self->{$_}), delete $self->{$_}
         for grep defined $self->{$_}, qw/aes_key mac_key first_iv/;
 
-    delete @$self{ qw/lineno nodes name_hash
-                      closures next_ref next_iv/ };
+    delete @$self{ qw/lineno nodes name_hash closures next_ref next_iv/ };
 }
 
 sub DESTROY { shift->_secure_wipe }
@@ -322,21 +337,34 @@ use strict;
 use warnings;
 use Carp ();
 
+# nodes() – find the (only) arrayref slot that isn’t name/name_hash/f
 sub nodes {
     my ($self) = @_;
-    return @{ $self->{ $self->{_k_nodes} } };
+
+    # memoise per class for speed
+    state %memo;
+    my $class = ref $self;
+    unless (exists $memo{$class}) {
+        my ($k) = grep {
+            $_ ne 'name'      &&
+            $_ ne 'name_hash' &&
+            $_ ne 'f'         &&
+            ref $self->{$_} eq 'ARRAY'
+        } keys %$self;
+        $memo{$class} = $k // Carp::croak('nodes array not found');
+    }
+    return @{ $self->{ $memo{$class} } };
 }
 
 # wipe everything except name + name_hash
 sub __scrub {
     my ($self) = @_;
-    if (exists $self->{_k_nodes}) {
-        @{ $self->{ $self->{_k_nodes} } } = ();
-        $self->{f} = undef;
-    }
-    elsif (exists $self->{nodes}) {
-        @{ $self->{nodes} } = ();
-        $self->{f} = undef;
+    foreach my $k (keys %$self) {
+        next if $k eq 'name' || $k eq 'name_hash';
+        if (ref $self->{$k} eq 'ARRAY') {
+            @{ $self->{$k} } = ();
+        }
+        $self->{$k} = undef;
     }
 }
 
