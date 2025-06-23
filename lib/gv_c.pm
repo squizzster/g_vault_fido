@@ -3,11 +3,19 @@ use v5.24;
 use strict;
 use warnings;
 
-use Carp qw(croak);
+#######################################################################
+# Dependencies
+#######################################################################
+use Carp                     qw(croak);
 use Crypt::Digest::BLAKE2b_256 qw(blake2b_256 blake2b_256_hex);
-use Crypt::Digest::BLAKE2b_512 ();
+use Crypt::Digest::BLAKE2b_512 ();    # only for side-channel-free RNG seeding in gv_random
 use Crypt::Mode::CBC;
+use List::Util              qw(shuffle);   # Fisher–Yates (core since 5.7.3)
+use Scalar::Util            qw(weaken);
 
+#######################################################################
+# Constants
+#######################################################################
 use constant {
     MASTER_SECRET_LEN => 32,
     MAC_KEY_LEN       => 32,
@@ -15,58 +23,57 @@ use constant {
     AES_KEY_LEN       => 32,   # AES-256
     AES_IV_LEN        => 16,
     BLAKE_NAME_TAG    => pack('H*', 'ee4bcef77cb49c70f31de849dccaab24'),
+    BLAKE_MASTER_TAG  => pack('H*', '915196c5c43ca9a1da54cdce59804793'),
 };
 
-#----------------------------------------------------------------------#
-# Helper: minimal zeroiser (best-effort – Perl gives no hard guarantees)
-#----------------------------------------------------------------------#
+#######################################################################
+# Helper: best-effort zeroiser (Perl offers no strong guarantees)
+#######################################################################
 sub _wipe    { return unless defined $_[0]; substr($_[0], $_, 1, "\0") for 0 .. length($_[0]) - 1; $_[0] = undef }
-sub _wipe_sv { _wipe(${ $_[0] }) }                 # for scalar refs
+sub _wipe_sv { _wipe(${ $_[0] }) }
 
-#----------------------------------------------------------------------#
-# Internal mini-DSL transform used by original code
-#----------------------------------------------------------------------#
+#######################################################################
+# Internal mini-DSL transform (obfuscation permutation) – unchanged
+#######################################################################
 my $_apply = sub {
     my ( $m, $p, $b ) = @_;
-    return ( $b ^ $p )                                          if $m == 0;
-    return ( ( $b << $p ) | ( $b >> ( 8 - $p ) ) ) & 0xFF       if $m == 1;
-    return ( $b + $p ) & 0xFF                                   if $m == 2;
-    return (~$b) & 0xFF;                                        # $m == 3
+    return ( $b ^ $p )                                        if $m == 0;
+    return ( ( $b << $p ) | ( $b >> ( 8 - $p ) ) ) & 0xFF     if $m == 1;
+    return ( $b + $p ) & 0xFF                                 if $m == 2;
+    return (~$b) & 0xFF;                                      ## $m == 3; # THIS IS CORRECT.
 };
 
-#----------------------------------------------------------------------#
+#######################################################################
 # build_cipher_ring( name => $text, [ master_secret => $512_bytes ] )
 #   → ( $ring_obj , undef | $err )
-#----------------------------------------------------------------------#
+#######################################################################
 sub build_cipher_ring {
-    my (%a) = @_;
-    my $name = $a{name} // 'default'; ### we now allocate a default.  return ( undef, 'Name required' );
+    my (%a)   = @_;
+    my $name  = $a{name} // 'default';
 
-    # -- master secret --------------------------------------------------
+    # -- master secret -------------------------------------------------
     my $master = $a{master_secret}
-        ? Crypt::Digest::BLAKE2b_256::blake2b_256($a{master_secret})
+        ? Crypt::Digest::BLAKE2b_256::blake2b_256($a{master_secret} . BLAKE_MASTER_TAG)
         : gv_random::get_crypto_secure_prng(MASTER_SECRET_LEN);
 
     return ( undef, 'Master secret wrong length ' . length($master) )
         unless length $master == MASTER_SECRET_LEN;
 
-    # -- static derivations ---------------------------------------------
+    # -- static derivations --------------------------------------------
     my $name_hash_hex = blake2b_256_hex( $name . BLAKE_NAME_TAG );
-    my $mac_key       = gv_random::get_crypto_secure_prng(MAC_KEY_LEN);          # MAC key
+    my $mac_key       = gv_random::get_crypto_secure_prng(MAC_KEY_LEN);
     my $aes_key       = substr blake2b_256( $master . 'AES_KEY' ), 0, AES_KEY_LEN;
 
     # AES-CBC engine (stateless)
-    my $cbc = Crypt::Mode::CBC->new( 'AES', 1 );                    # PKCS#7
+    my $cbc = Crypt::Mode::CBC->new( 'AES', 1 );                # PKCS#7
 
-    # -- node generation ------------------------------------------------
+    # -- node generation ----------------------------------------------
     my $iv0 = gv_random::get_crypto_secure_prng(AES_IV_LEN);
     my @iv  = ( $iv0 );
     my ( @ciphertext, @mac );
 
     my @bytes = unpack 'C*', $master;
     for my $i ( 0 .. $#bytes ) {
-
-        # original permutation
         my $seed                = substr blake2b_256( $master . pack('N', $i) ), 0, 2;
         my ( $mr, $pr )         = unpack 'CC', $seed;
         my $mode                = $mr % 4;
@@ -80,22 +87,23 @@ sub build_cipher_ring {
 
         push @ciphertext, $ct;
         push @mac,        $tag;
-        $iv[ $i + 1 ]     = substr $ct, 0, AES_IV_LEN;              # IV-chaining
+        $iv[ $i + 1 ]     = substr $ct, 0, AES_IV_LEN;        # IV-chaining
     }
 
-    # -- ring closures --------------------------------------------------
-    my ( @closures, @next_ref );
+    # -- build closures in sequential order ---------------------------
+    my ( @closures, @next_ref, @next_iv_ref );
     for my $idx ( 0 .. $#ciphertext ) {
         my ( $ct, $tag, $this_iv ) = ( $ciphertext[$idx], $mac[$idx], $iv[$idx] );
-        my $next_iv                = $iv[ ( $idx + 1 ) % @ciphertext ];
+        my $next_iv                = undef;   # will be filled after shuffling/linking
+        my $next                   = undef;   # ditto
 
-        my $next;
-        push @next_ref, \$next;
+        push @next_ref,    \$next;
+        push @next_iv_ref, \$next_iv;
 
         push @closures, sub {
             my ($raw) = @_;
 
-            # ---- raw dump used by the serializer ----------------------
+            # ---- raw dump (for serializer) ---------------------------
             if ( defined $raw && $raw eq 'raw' ) {
                 return (
                     index     => $idx,
@@ -103,22 +111,23 @@ sub build_cipher_ring {
                     ct        => $ct,
                     tag       => $tag,
                     next_node => $next,
+                    next_iv   => $next_iv,
                 );
             }
 
-            # ---- authenticated decrypt --------------------------------
+            # ---- authenticated decrypt ------------------------------
             my $calc = substr Crypt::Digest::BLAKE2b_256::blake2b_256(
                 $mac_key . $this_iv . $ct
             ), 0, MAC_OUTPUT_LEN;
             croak "MAC mismatch in node $idx" if $calc ne $tag;
 
             my $plain = $cbc->decrypt( $ct, $aes_key, $this_iv );
-            my ( $i, $stored, $mode, $param ) = unpack 'nC3', $plain;
+            my ( $i, $stored_byte, $mode, $param ) = unpack 'nC3', $plain;
             substr( $plain, $_, 1, "\0" ) for 0 .. length($plain) - 1;  # best-effort wipe
 
             return (
                 index       => $i,
-                stored_byte => $stored,
+                stored_byte => $stored_byte,
                 mode        => $mode,
                 param       => $param,
                 next_node   => $next,
@@ -126,18 +135,47 @@ sub build_cipher_ring {
             );
         };
     }
-    ${ $next_ref[$_] } = $closures[ ( $_ + 1 ) % @closures ] for 0 .. $#closures;
 
+    ###################################################################
+    # Fisher–Yates shuffle – randomises traversal order
+    ###################################################################
+
+    my @perm = shuffle( 0 .. $#closures );          # random permutation
+
+    @closures      = @closures[      @perm ];
+    @next_ref      = @next_ref[      @perm ];
+    @next_iv_ref   = @next_iv_ref[   @perm ];
+    @iv            = @iv[            @perm ];       # keep IV alignment for next_iv
+
+    # Optional: random rotation so start node is also random *among* shuffled list.
+    # Fisher–Yates already gives us that (first element random), so no extra work.
+
+    ###################################################################
+    # Relink according to new order – build a Hamiltonian cycle
+    ###################################################################
+    for my $i ( 0 .. $#closures ) {
+        my $succ = ( $i + 1 ) % @closures;          # successor index
+
+        ${ $next_ref[$i] }    = $closures[$succ];   # set next_node
+        weaken( ${ $next_ref[$i] } );               # avoid strong ref cycles
+        ${ $next_iv_ref[$i] } = $iv[$succ];         # set next_iv to IV of successor
+    }
+
+    ###################################################################
+    # Ring object assembly -------------------------------------------
+    ###################################################################
     return (
         {
-            f => $closures[0],
+            f         => $closures[0],          # entry point is now random
             name       => $name,
             name_hash  => $name_hash_hex,
             mac_key    => $mac_key,
             aes_key    => $aes_key,
+            nodes      => [ @closures ],        # keeps traversal order for debugging
         },
         undef
     );
 }
 
-1;
+1; # end of gv_c.pm
+

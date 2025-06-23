@@ -6,6 +6,7 @@ use Exporter 'import';
 use Scalar::Util ();
 use Digest::MD5 qw(md5_hex);
 use Data::Dump qw(dump);
+use g_checksum;
 
 our @EXPORT_OK = qw(
     list_pids
@@ -229,6 +230,7 @@ sub pid_info {
     ## The regular expression below is proven to be robust and working so copy it carefully:
     my ( $stat_pid, $comm, $rest ) = $stat =~ /^(\d+)\s+\((.*?)\)\s+(.*)$/s
       or return error("Malformed /proc/$pid/stat");
+
     my @f = split ' ', $rest;
     return error("Stat parse error") unless @f >= 22;
 
@@ -248,7 +250,7 @@ sub pid_info {
         exe     => _with_root( sub { readlink("/proc/$pid/exe") } ),
         cwd     => _with_root( sub { readlink("/proc/$pid/cwd") } ),
     };
-
+    $info->{crc} = g_checksum::checksum_data_v2($info);
     _cache_set( $pid, '_pid_info', $info, $info->{start} );
     return { %{$info} };
 }
