@@ -54,7 +54,9 @@ my $_recover = sub {
     my ($ring, $salt, $pepper) = @_;
 
     # sanity checks ­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­
-    ### print "RING IS " . (ref $ring ) . "\n";
+    use Data::Dumper qw(Dumper);
+    print ( Dumper $ring );
+    print "\nRING IS " . (ref $ring ) . "\n";
     #return (undef, 'bad ring')   unless ( ref $ring eq 'gv_l::Ring' );
     return (undef, 'bad salt')   if length($salt)   != DYNAMIC_SALT_LEN;
     return (undef, 'bad pepper') if length($pepper) != PEPPER_LEN;
