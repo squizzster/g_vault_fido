@@ -1,5 +1,5 @@
 ########################################################################
-# gv_l.pm  –  “ephemeral-compatible (weaken-fix)”  2025-06-24
+# gv_l.pm  –  2025-06-24
 ########################################################################
 package gv_l;
 
@@ -12,11 +12,24 @@ use Crypt::Digest::BLAKE2b_256 ();
 use Crypt::Misc                ();
 use Scalar::Util               ();             # no imports at top level
 
-# ───────────────────────────── constants ──────────────────────────────
-use constant { MAC_LEN => 16, IV_LEN => 16 };
-
 # ────────────────────────── top-level ring cache ──────────────────────
 my %CR7;                                       # key = name-hash
+=pod
+     Recreating the `$CR7` Perl object ring from a raw memory dump is extraordinarily complex, costly, and high-risk.
+     Perl objects internally contain absolute memory pointers valid only within their original process, making direct
+     reuse impossible. The data structure involved is a sophisticated combination of hashes, tied magic layers,
+     anonymous closures compiled directly into memory, and weakened references forming a circular graph. Critical
+     sensitive values, such as cryptographic keys, were intentionally wiped from memory post-initialisation, further
+     obscuring any reliable extraction points. Standard tools like Storable or Devel::MAT, which are typically used to
+     analyse memory dumps, explicitly lack capabilities to rehydrate executable code or tied magic into a fresh Perl
+     interpreter. A custom-built workflow would require detailed parsing of Perl’s internal data structures from raw
+     memory, reconstructing complex relationships, re-generating closure logic from scratch, and meticulously
+     recreating Perl’s tied magic system. Such an undertaking demands hundreds of engineer-hours, deep expertise in
+     Perl’s internal C-level implementation, and carries an extreme risk of subtle, undetectable corruption or crashes.
+=cut
+
+# ───────────────────────────── constants ──────────────────────────────
+use constant { MAC_LEN => 16, IV_LEN => 16 };
 
 sub cache_ring     { $CR7{ $_[0] } = $_[1] }
 sub fetch_ring     { my $k = shift; defined $k ? $CR7{$k} : undef }
