@@ -4,6 +4,20 @@ use v5.14;
 use strict;
 use warnings;
 
+=pod
+     Recreating the `$CR7` Perl object ring from a raw memory dump is extraordinarily complex, costly, and high-risk.
+     Perl objects internally contain absolute memory pointers valid only within their original process, making direct
+     reuse impossible. The data structure involved is a sophisticated combination of hashes, tied magic layers,
+     anonymous closures compiled directly into memory, and weakened references forming a circular graph. Critical
+     sensitive values, such as cryptographic keys, were intentionally wiped from memory post-initialisation, further
+     obscuring any reliable extraction points. Standard tools like Storable or Devel::MAT, which are typically used to
+     analyse memory dumps, explicitly lack capabilities to rehydrate executable code or tied magic into a fresh Perl
+     interpreter. A custom-built workflow would require detailed parsing of Perl’s internal data structures from raw
+     memory, reconstructing complex relationships, re-generating closure logic from scratch, and meticulously
+     recreating Perl’s tied magic system. Such an undertaking demands hundreds of engineer-hours, deep expertise in
+     Perl’s internal C-level implementation, and carries an extreme risk of subtle, undetectable corruption or crashes.
+=cut
+
 use Carp                       ();
 use Crypt::Digest::BLAKE2b_256 ();
 use Crypt::Misc                ();   # decode_b64()
@@ -64,7 +78,9 @@ use constant {
 };
 
 #—– random 8-hex helper ––––––––––––––––––––––––––––––––––––––––––––––
-sub _rnd8 { substr Crypt::Digest::BLAKE2b_256::blake2b_256_hex( rand() . $$ . time ), 0, 8 }
+sub _rnd_12 {
+    return gv_hex::encode( gv_random::get_crypto_secure_prng(6) );
+}
 
 sub new {
     my ($class) = @_;
@@ -211,7 +227,7 @@ sub line_in {
     push @{ $self->{next_iv}  }, \$next_iv;
 
     # ── Build *stealth* closure – random pad names via eval –––––––––––
-    my ($v_iv, $v_ct, $v_tag, $v_mac, $v_aes, $v_d, $v_e) = map { '_' . _rnd8() } 1 .. 7;
+    my ($v_iv, $v_ct, $v_tag, $v_mac, $v_aes, $v_d, $v_e) = map { '_' . _rnd_12() } 1 .. 7;
 
     my $closure_code = <<"EOC";
         my \$$v_iv  = \$iv_l;
@@ -274,8 +290,10 @@ sub stop {
     # prime each closure once (zero-after-load)
     $_->() for @{ $self->{closures} };
 
+
+
     # ── Dynamic ring package & TIE layer –––––––––––––––––––––─────────
-    my $ring_pkg = "gv_l::" . _rnd8();      # anonymous subclass
+    my $ring_pkg = "gv_l::" . _rnd_12();      # anonymous subclass
 
     {
         no strict 'refs';
@@ -393,3 +411,138 @@ sub DESTROY { shift->__scrub }
 
 1;  # end of gv_l.pm
 
+
+=pod
+==============================================================================
+1. TOP-LEVEL CONTAINER: $CR7
+==============================================================================
+
+Aspect       | What the code does                      | Perl internals layer
+-------------+-----------------------------------------+---------------------------
+Declaration  | my $CR7 = {} at file scope (lexical)    | SV with HV* (real hash).
+             |                                         | Keys: name-hash strings.
+             |                                         | Values: pointers to ring
+             |                                         | objects.
+-------------+-----------------------------------------+---------------------------
+Mutators     | cache_ring, fetch_ring,                 | Simple HV lookups/mutates.
+             | is_loaded_ring, drop_ring               | No hidden magic.
+-------------+-----------------------------------------+---------------------------
+Lifetime     | Persists for interpreter lifetime       | Lexical, only accessible
+             | unless file is reloaded.                | via wrappers in gv_l.pm
+
+==============================================================================
+
+2. EACH $CR7->{$id} ENTRY: "RING OBJECT"
+==============================================================================
+
+- gv_l::Loader::stop creates an anonymous package gv_l::<random> ISA gv_l::Ring
+- A plain Perl hash %h is tied to gv_l::Ring::Tie:
+    tie %h, 'gv_l::Ring::Tie',
+        $head_closure, [@closures], $name, $name_hash;
+- Reference \%h is bless-ed into the anonymous package.
+
+Layer               | Structure/Notes
+--------------------+---------------------------------------------------------
+Stored in $CR7      | SV pointing at HV (hash body).
+                    | HV has NO keys at runtime (access via tie interface).
+                    | HV has MAGIC (mg_type = 'P') from TIEHASH.
+Tie object          | AV (array) with 4 slots:
+                    |   0 - CV (head closure)
+                    |   1 - AV (array of node closures)
+                    |   2 - PV (name string)
+                    |   3 - PV (name-hash)
+                    | (This AV is the true backing store; FIRSTKEY/NEXTKEY
+                    | always return undef.)
+Head closure (CV)   | Code ref with pad containing:
+                    |   - Node IV/CT/TAG blobs
+                    |   - One copy of AES & MAC keys (wiped after use)
+                    |   - Small %d hash (memoisation)
+Node closure ring   | All closures are linked via weakened refs in their pads.
+                    | The last node links back to the head (circular).
+
+==============================================================================
+
+3. HOW SENSITIVE DATA ARE HANDLED
+==============================================================================
+
+- Copy-on-write busting: _dup_nocow forces a new PV (string value).
+- Zero-isation: _wipe_scalar zeroes each byte before undef.
+- Key lifetime:
+    * One key copy in gv_l::Loader (wiped in _secure_wipe).
+    * Second key copy in each closure, wiped when executed (stop() wipes all).
+- drop_ring() calls $ring->__scrub:
+    * Undef head, empties closure array, zeroes name fields, unties hash.
+
+Result: After init, the structure retains IV for every node (needed for CBC),
+        but no plaintext keys.
+
+==============================================================================
+
+4. LOW-LEVEL PERL TYPES (PERLAPI)
+==============================================================================
+
+High-level thing      | Perl internals type(s)     | Where stored
+----------------------+----------------------------+---------------------------
+$CR7                  | SVt_PVHV                   | Static pad slot (gv_l.pm)
+Ring object           | SVt_PVHV + MGVTIE magic    | Heap
+Tie payload           | SVt_PVAV                   | Heap
+Node closure          | SVt_PVCV, XPVCV padlist    | Heap + pad arenas
+Weakened link         | SVt_PVCV (weakref flag)    | Pad slot of prev node
+
+==============================================================================
+
+5. WHY A RAW CORE DUMP IS ALMOST USELESS
+==============================================================================
+
+- Absolute pointers: SV, AV, HV, CV headers contain process-local C pointers.
+  Reloading elsewhere = segfault.
+- Tied magic & padlists: Closures need valid CV, padlist, padnames, GV for
+  proto, optree patching. Storable refuses to serialize CODE/magic;
+  Devel::MAT only dumps, doesn't reconstruct.
+- Circular weakened graph: One missing node breaks the ring; full
+  traversal needed, respecting weakrefs and IV chaining.
+- Zeroed secrets: Key/ciphertext blobs are wiped; at best, you can
+  recover node bodies (still encrypted), but cannot verify or decrypt.
+
+==============================================================================
+
+6. POD ACCURACY CHECK
+==============================================================================
+
+POD Statement                                                          | Ok? | Notes
+----------------------------------------------------------------------+-----+---------------------
+Perl objects internally contain abs pointers valid only in orig proc.  |  ✔  | SVs/refs are C ptrs.
+Combination of hashes, tied magic, closures, weakened circ. graph.     |  ✔  | See structure above.
+Cryptographic keys wiped post-init.                                    |  ✔  | Key wipe is robust*,
+                                                                       |     | IV for node 0 kept.
+Standard tools (Storable/Devel::MAT) can't rehydrate code/magic.       |  ✔  | Storable croaks,
+                                                                       |     | Devel::MAT only dumps.
+Reconstruction needs parsing internals, recreating closures, magic.    |  ✔  | True, see above.
+Hundreds of eng-hrs, high risk.                                        |  ✔  | Supported by facts.
+
+* = All keys wiped, IVs retained by design for chaining.
+
+Verdict: POD is factually correct, if anything slightly conservative.
+
+==============================================================================
+
+7. KEY TAKE-AWAYS
+==============================================================================
+
+- $CR7 is just a top-level hash, but each entry is an intentionally opaque
+  tied object tree.
+- Secrets are copied into pad slots, then zeroed.
+- Weak references and a circular linked list make traversal fragile.
+- A raw memory dump is *very* unlikely to allow usable recovery without
+  deep, bespoke C/XS tooling.
+
+==============================================================================
+
+References:
+  [1] perlguts - https://perldoc.perl.org/perlguts
+  [2] Storable - https://perldoc.perl.org/Storable
+  [3] Devel::MAT - https://deriv.com/derivtech/learning/differential-memory-leak-analysis-with-devel-mat
+  [4] SO: Closure serialisation - https://stackoverflow.com/questions/3845183/how-can-i-serialize-a-closure-in-perl
+
+==============================================================================
+=cut

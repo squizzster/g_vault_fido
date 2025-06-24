@@ -6,20 +6,12 @@ use Crypt::Misc   ();
 use Exporter 'import';
 our @EXPORT_OK = qw(get_file_attr set_file_attr del_file_attr);
 # -- privilege helper ------------------------------------------------------
-sub _with_root {
-    my ($code) = @_;
-    return $code->() if $> == 0;          # already effective root
-    if ( $< == 0 ) {                      # real-UID root → temporarily raise
-        local $> = 0; return $code->();
-    }
-    $code->();
-}
 
 # -- low-level raw fetch ----------------------------------------------------
 sub get_file_attr_raw {
     my ( $file, $attr ) = @_;
     return unless $file && $attr;
-    my $val = _with_root( sub { File::ExtAttr::getfattr( $file, $attr ) } );
+    my $val = with_root::_with_root( sub { File::ExtAttr::getfattr( $file, $attr ) } );
     ( defined $val && length $val ) ? $val : undef;
 }
 
@@ -43,14 +35,14 @@ sub set_file_attr {
     my $packed  = eval { cbor::encode($value) }   or return;
     my $encoded = eval { b58f::encode($packed) }  or return;
 
-    _with_root( sub { File::ExtAttr::setfattr( $file, $attr, $encoded ) } ) ? 1 : undef;
+    with_root::_with_root( sub { File::ExtAttr::setfattr( $file, $attr, $encoded ) } ) ? 1 : undef;
 }
 
 # -- public API: delete -----------------------------------------------------
 sub del_file_attr {
     my ( $file, $attr ) = @_;
     return unless $file && $attr && -r $file;
-    _with_root( sub { File::ExtAttr::delfattr( $file, $attr ) } ) ? 1 : undef;
+    with_root::_with_root( sub { File::ExtAttr::delfattr( $file, $attr ) } ) ? 1 : undef;
 }
 
 1;

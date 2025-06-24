@@ -341,9 +341,9 @@ sub _handle_stop {
 ###############################################################################
 sub dev_test_decrypt {
     my ($xout,$xerr) = gv_d::decrypt({
-        cipher_text => gv_hex::decode('36643337653764636365633865366638633934326261616661396330323836346137386562646435326264306437303431366365343537346533646236376137ad0143e86babfc4ec34bd91bcb8bdb29c88e4ff1578fce7b4d02cff547614ad87be7bff09f2d43e0bc523552414f309dcb5bd0cdf76a76b5eb3716786e18869f66951e872715f0c81221d3259b0a0e7224641dfef75cb4d2e26b696c369f4de2e430324d2af44039e17cc96160be9b95667573c2e29bc5b24cdbceb674e215bf731280'),
-        pepper      => '1' x 32,
-        aad         => 'woof',
+        cipher_text  => gv_hex::decode('36643337653764636365633865366638633934326261616661396330323836346137386562646435326264306437303431366365343537346533646236376137ad0143e86babfc4ec34bd91bcb8bdb29c88e4ff1578fce7b4d02cff547614ad87be7bff09f2d43e0bc523552414f309dcb5bd0cdf76a76b5eb3716786e18869f66951e872715f0c81221d3259b0a0e7224641dfef75cb4d2e26b696c369f4de2e430324d2af44039e17cc96160be9b95667573c2e29bc5b24cdbceb674e215bf731280'),
+        run_time_key => '1' x 32,
+        aad          => 'woof',
     });
 
     $xout = decode_utf8($xout) unless not defined $xout and is_utf8($xout);
@@ -351,15 +351,15 @@ sub dev_test_decrypt {
     warn "PREVIOUS ERROR ===> $xerr" if defined $xerr;
 
     my ($enc) = gv_e::encrypt({
-        plaintext => "Good BYE!, how are you? 👋🙂🫵❓",
-        pepper    => '1' x 32,
-        key_name  => 'default',
-        aad       => 'woof',
+        plaintext    => "Good BYE!, how are you? 👋🙂🫵❓",
+        run_time_key => '1' x 32,
+        key_name     => 'default',
+        aad          => 'woof',
     });
     warn gv_hex::encode($enc) if defined $enc;
     warn "I got [" . length($enc) . "] length of encrypted data.\n" if defined $enc;
 
-    my ($ok, $err) = gv_d::decrypt({ cipher_text => $enc, pepper => '1' x 32, aad => 'woof', });
+    my ($ok, $err) = gv_d::decrypt({ cipher_text => $enc, run_time_key => '1' x 32, aad => 'woof', });
     $ok = decode_utf8($ok) unless not defined $ok and is_utf8($ok);
     warn "CURRENT  ===> $ok" if defined $ok;
 
@@ -371,17 +371,17 @@ sub dev_test_decrypt {
         message        => $xx_msg,
         signature_blob => scalar( (gv_m::sign(
             message  => $xx_msg,
-            pepper   => $xx_pep,
+            run_time_key   => $xx_pep,
             key_name => $xx_key,
         ))[0] ),
-        pepper         => $xx_pep,
+        run_time_key         => $xx_pep,
     );
     print "OOOOOOOOOOOOOOOOOOOKKKKKKKKKKK [$xxx_ok]\n" if defined $xxx_ok;
 
     my $msg = "Hello, this is public text.";
     my ($sig_blob, $sign_err) = gv_m::sign(
        message  => $msg,
-       pepper   => '2' x 32,
+       run_time_key   => '2' x 32,
        key_name => 'default',
     );
     print "SIGNED MESSAGE [" . gv_hex::encode($sig_blob) . "]."
@@ -392,7 +392,7 @@ sub dev_test_decrypt {
     my ($vok, $verify_err) = gv_m::verify(
         message        => $msg,
         signature_blob => $o_signed,
-        pepper         => '2' x 32,
+        run_time_key         => '2' x 32,
     );
     print "\n\nO VERIFY [$vok].\n";
 }

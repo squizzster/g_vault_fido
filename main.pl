@@ -32,10 +32,19 @@ print "\n";
 
 ev_signal::start ( $g );
 
-Fifo::fifo_add   ( $g, '/tmp/test.fifo'           ) or warn "Failed to start FIFO watcher. \n";
-Fifo::fifo_add   ( $g, '/etc/my.cnf.d/client.cnf' ) or warn "Failed to start FIFO watcher. \n";
-Fifo::fifo_add   ( $g, 'hello'                    ) or warn "Failed to start FIFO watcher. \n";
-Fifo::fifo_add   ( $g, '/gbooking/g_fifo/i_am_a_file' ) or warn "Failed to start FIFO watcher. \n";
+my $conf         = team_lock_load_config::load_config();
+my %FILES        = %{ $conf->{files} };
+my %TEAMS        = %{ $conf->{teams} };
+my @CONFIG_FILES = @{ $conf->{config_files} };
+
+for my $file (@CONFIG_FILES) {
+    Fifo::fifo_add($g, $file) or warn "Cannot watch [$file].\n";
+}
+
+#Fifo::fifo_add   ( $g, '/tmp/test.fifo'           ) or warn "Failed to start FIFO watcher. \n";
+#Fifo::fifo_add   ( $g, '/etc/my.cnf.d/client.cnf' ) or warn "Failed to start FIFO watcher. \n";
+#Fifo::fifo_add   ( $g, 'hello'                    ) or warn "Failed to start FIFO watcher. \n";
+#Fifo::fifo_add   ( $g, '/gbooking/g_fifo/i_am_a_file' ) or warn "Failed to start FIFO watcher. \n";
 
 ev_socket::add(
                    $g,

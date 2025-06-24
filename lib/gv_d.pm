@@ -10,7 +10,7 @@ use constant {
     MASTER_SECRET_LEN           => 32,
     DYNAMIC_SALT_LEN            => 64,
     MAC_OUTPUT_LEN              => 16,
-    PEPPER_LEN                  => 32,
+    RUN_TIME_KEY_LEN            => 32,
     NAME_HASH_HEX_LEN           => 64,
     ERR_DECRYPTION_FAILED       => 'Decryption failed.',
     ERR_INVALID_INPUT           => 'Invalid input provided.',
@@ -22,14 +22,14 @@ use constant {
 #────────────────────────────────────────────────────────────────────
 sub decrypt {
     my %a = @_==1 ? %{$_[0]} : @_;
-    my ($blob,$pepper,$aad) = @a{qw(cipher_text pepper aad)};
+    my ($blob,$rtk,$aad) = @a{qw(cipher_text run_time_key aad)};
     $aad //= '';
 
     # Domain tag for AAD
     my $aad_hashed = Crypt::Digest::BLAKE2b_512::blake2b_512(BLAKE_AAD_TAG . $aad);
 
     return (undef,ERR_INVALID_INPUT) unless defined $blob;
-    return (undef,ERR_INVALID_INPUT) unless defined($pepper) && length($pepper)==PEPPER_LEN;
+    return (undef,ERR_INVALID_INPUT) unless defined($rtk) && length($rtk)==RUN_TIME_KEY_LEN;
 
     my $min = NAME_HASH_HEX_LEN + DYNAMIC_SALT_LEN + 12 + 16;
     return (undef,ERR_INVALID_INPUT) if length($blob) < $min;
@@ -49,10 +49,10 @@ sub decrypt {
             gv_e::_recover_for_mac(
                 gv_l::get_cached_ring($name_hash),
                 $salt,
-                $pepper
+                $rtk
             ),
             $salt,
-            $pepper
+            $rtk
         ) };
         1;  # returns true on success
     } or do {

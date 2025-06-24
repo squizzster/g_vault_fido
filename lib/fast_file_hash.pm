@@ -56,7 +56,7 @@ sub __fast_file_hash_core {
     my ( $file_raw, $cfg_ref ) = @_;
     return undef unless defined $file_raw;
 
-    print STDERR " ====>  [$file_raw] <---\n";
+    ### delete print STDERR " ====>  [$file_raw] <---\n";
     my $digest;
     eval {
         my $file = abs_path($file_raw)

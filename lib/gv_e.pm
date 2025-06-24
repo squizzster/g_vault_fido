@@ -17,7 +17,7 @@ use constant {
     MASTER_SECRET_LEN           => 32,
     DYNAMIC_SALT_LEN            => 64,
     MAC_OUTPUT_LEN              => 16,
-    PEPPER_LEN                  => 32,
+    RUN_TIME_KEY_LEN            => 32,
     NAME_HASH_HEX_LEN           => 64,
     ERR_ENCRYPTION_FAILED       => 'Encryption failed.',
     ERR_INVALID_INPUT           => 'Invalid input provided.',
@@ -49,16 +49,16 @@ my $_undo = sub { my ($m,$p,$b)=@_;
 
 # --- faster, zero-copy version -------------------------------------
 my $_recover = sub {
-    my ($ring, $salt, $pepper) = @_;
+    my ($ring, $salt, $rtk) = @_;
 
     # sanity checks ­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­­
     return (undef, 'bad ring')   if not defined $ring or ref($ring) eq 'ARRAY';
     return (undef, 'bad salt')   if length($salt)   != DYNAMIC_SALT_LEN;
-    return (undef, 'bad pepper') if length($pepper) != PEPPER_LEN;
+    return (undef, 'bad RTK')    if length($rtk) != RUN_TIME_KEY_LEN;
 
-    # unpack salt / pepper once
+    # unpack salt / run-time-key once
     my @sb = unpack 'C*', $salt;
-    my @pb = unpack 'C*', $pepper;
+    my @pb = unpack 'C*', $rtk;
 
     my %seen;
     my $node = $ring->{f};
@@ -81,9 +81,9 @@ my $_recover = sub {
 
         my $orig  = $_undo->( @d{qw(mode param stored_byte)} );
 
-        # salt- & pepper-mix
+        # salt- & run-time-key-mix
         my $byte  = $orig
-                  ^ $pb[ $d{index} % PEPPER_LEN ]
+                  ^ $pb[ $d{index} % RUN_TIME_KEY_LEN ]
                   ^ $sb[ $d{index} % DYNAMIC_SALT_LEN ];
 
         # write straight into buffer (8-bit slot)
@@ -97,18 +97,18 @@ my $_recover = sub {
 };
 
 my $_derive_aead_params = sub {
-    my ($sm,$salt,$pep)=@_;
+    my ($sm,$salt,$rtk)=@_;
     return if not defined $sm;
-    my $ikm = DS_IKM_AEAD . $sm . $pep;
+    my $ikm = DS_IKM_AEAD . $sm . $rtk;
     my $k   = hkdf($ikm, DERIVE_SALT_PREFIX_1 . $salt, 'BLAKE2b_256', 32, DS_INFO_AEAD_KEY);
     my $n   = hkdf($ikm, DERIVE_SALT_PREFIX_2 . $salt, 'BLAKE2b_256', 12, DS_INFO_AEAD_NONCE);
     [$k,$n];
 };
 
 my $_derive_mac_key = sub {
-    my ($sm,$salt,$pep)=@_;
+    my ($sm,$salt,$rtk)=@_;
     return if not defined $sm;
-    my $ikm = DS_IKM_MAC . $sm . $pep;
+    my $ikm = DS_IKM_MAC . $sm . $rtk;
     my $k   = hkdf($ikm, DERIVE_SALT_PREFIX_3 . $salt, 'BLAKE2b_256', 32, DS_INFO_MAC_KEY);
     [$k];
 };
@@ -123,14 +123,14 @@ sub _derive_for_aead { goto &{ $_derive_aead_params } }
 
 sub encrypt {
     my %a = @_==1 ? %{$_[0]} : @_;
-    my ($pt,$pep,$name,$aad) = @a{qw(plaintext pepper key_name aad)};
+    my ($pt,$rtk,$name,$aad) = @a{qw(plaintext run_time_key key_name aad)};
     $aad //= '';
 
     # Domain tag for AAD
     my $aad_hashed = Crypt::Digest::BLAKE2b_512::blake2b_512(BLAKE_AAD_TAG . $aad);
 
     return (undef,ERR_INVALID_INPUT) unless defined $pt;
-    return (undef,ERR_INVALID_INPUT) unless defined($pep) && length($pep)==PEPPER_LEN;
+    return (undef,ERR_INVALID_INPUT) unless defined($rtk) && length($rtk)==RUN_TIME_KEY_LEN;
     return (undef,ERR_INVALID_INPUT) unless defined $name;
 
     my $name_hash = Crypt::Digest::BLAKE2b_256::blake2b_256_hex($name . BLAKE_NAME_TAG);
@@ -147,10 +147,10 @@ sub encrypt {
                 $_recover->(
                     gv_l::get_cached_ring($name_hash),
                     $salt,
-                    $pep
+                    $rtk
                 ),
                 $salt,
-                $pep
+                $rtk
             )
         };
         1;  # ensure eval returns true on success
