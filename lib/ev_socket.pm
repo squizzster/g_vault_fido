@@ -350,12 +350,13 @@ sub dev_test_decrypt {
     warn "PREVIOUS ===> $xout" if defined $xout;
     warn "PREVIOUS ERROR ===> $xerr" if defined $xerr;
 
-    my ($enc) = gv_e::encrypt({
+    my ($enc, $eeee) = gv_e::encrypt({
         plaintext    => "Good BYE!, how are you? 👋🙂🫵❓",
         run_time_key => '1' x 32,
         key_name     => 'default',
         aad          => 'woof',
     });
+    warn $eeee if defined $eeee;
     warn gv_hex::encode($enc) if defined $enc;
     warn "I got [" . length($enc) . "] length of encrypted data.\n" if defined $enc;
 
