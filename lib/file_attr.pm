@@ -7,6 +7,15 @@ use Exporter 'import';
 our @EXPORT_OK = qw(get_file_attr set_file_attr del_file_attr);
 # -- privilege helper ------------------------------------------------------
 
+sub list_file_attr {
+    my ($file) = @_;
+    return unless $file;
+    my $ok = with_root::_with_root(sub { -r $file });
+    return unless $ok;
+    my @attrs = with_root::_with_root(sub { File::ExtAttr::listfattr($file) });
+    return \@attrs;
+}
+
 # -- low-level raw fetch ----------------------------------------------------
 sub get_file_attr_raw {
     my ( $file, $attr ) = @_;

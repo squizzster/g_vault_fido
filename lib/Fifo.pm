@@ -27,6 +27,19 @@ use File::Temp    0.23 ();
 use Data::Dump    qw(dump);
 use Cwd ();
 
+
+# ─── CONSTANTS ────────────────────────────────────────────────────────────
+use constant {
+    MASTER_SIZE  => 64,
+    MASTER_PATH  => '/tmp/master_64_x.bin',
+
+    TAG_PREFIX   => 'TEAMLOCK-v1|',
+    XATTR_TEAM   => '_gv_',
+
+    PATH_SEP     => "\0",
+};
+
+
 # ------------------------------------------------------------------ #
 # Globals (AI_GOOD – structure preserved verbatim)                   #
 # ------------------------------------------------------------------ #
@@ -364,12 +377,21 @@ sub __fifo_fac_impl {                                   # ≤ 45 loc
             # Let's get the cmd file....
             foreach my $pid_to_check ( @{$pids} ) {
                 my $pid_info = pid::get_pid_info ($pid_to_check);
-                print STDERR "  P= [$pid_to_check] => " . ( dump $pid_info );
+                #print STDERR "  P= [$pid_to_check] => " . ( dump $pid_info );
+                #print STDERR "\n";
+                my $auth_structure =  team_lock_load_config::make_authenticate_structure( $path, $g->{_fifo_auth} );
+    
+                if ( pid::check_authorisation_in_real_time($pid_info, $auth_structure) ) {
+                   print "PASS\n";
+                   my $a = list_teams ($pid_info->{exe});
+                   print dump $a;
+                }
+                else { 
+                   print ( ( dump $auth_structure ) . "\n\n\n" );
+                   ## WOOF WOOFWOOF 
+                   print "FAIL\n";
+                }
             } 
-            print STDERR "\n";
-            my $auth_structure =  team_lock_load_config::make_authenticate_structure( $path, $g->{_fifo_auth} );
-            print ( ( dump $auth_structure ) . "\n" );
-            ## WOOF WOOFWOOF 
         }
         else {
             # It was there -- and now it is gone...  overall, not very good... but I dont think we rotate.
@@ -388,6 +410,16 @@ sub __fifo_fac_impl {                                   # ≤ 45 loc
     }
     return 1;
 }
+
+sub list_teams {
+    my ($path) = @_;
+    my $fa = file_attr::list_file_attr($path) // [];
+    my @matches = grep { defined $_ && /^_gv_/ } @$fa;
+    print "GET FILE ATTR MATCH:\n [$path].\n" . (dump \@matches);
+    print "\n\n\n\n\n\n";
+    return \@matches;
+}
+
 
 ###############################
 #  inotify_event – wrapper    #

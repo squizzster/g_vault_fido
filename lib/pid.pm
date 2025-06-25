@@ -242,8 +242,8 @@ sub pid_info {
         cmdline => _cmdline_array($pid),
         tcomm   => $comm,
         ppid    => $f[1],
-        pppid   => _ancestor_pid( $pid, 2 ),
-        ppppid  => _ancestor_pid( $pid, 3 ),
+        pppid   => scalar _ancestor_pid( $pid, 2 ),
+        ppppid  => scalar _ancestor_pid( $pid, 3 ),
         start   => $f[19],
         uid     => $uid,
         gid     => $gid,
@@ -252,6 +252,7 @@ sub pid_info {
     };
     $info->{crc} = g_checksum::checksum_data_v2($info);
     _cache_set( $pid, '_pid_info', $info, $info->{start} );
+    print dump $info;
     return { %{$info} };
 }
 
@@ -301,6 +302,89 @@ sub pids_holding_file {
         }
     );
 }
+
+
+
+
+
+
+
+
+
+# -------------------------------------------------------------------
+# Authorisation helpers
+# -------------------------------------------------------------------
+sub _value_matches {
+    my ( $val, $allowed ) = @_;
+
+    # Wildcard if rule value is undef
+    return 1 if !defined $allowed;
+
+    # If the rule provides an ARRAY ref → treat as “one-of”
+    return grep { defined $_ && $_ == $val } @$allowed
+        if ref $allowed eq 'ARRAY';
+
+    # Otherwise scalar equality
+    return $val == $allowed;
+}
+
+sub _parent_matches {
+    my ( $wanted_exe, $walk_back, $proc ) = @_;
+    return 1 unless defined $wanted_exe;        # wildcard parent
+
+    my $levels   = 0;
+    my $curr_pid = $proc->{ppid};
+
+    # Hard upper bound avoids pathological / orphan chains
+    while ( $curr_pid && $levels < 10 ) {
+        my $info = pid::pid_info($curr_pid) or return 0;
+        return 1 if ( $info->{exe} // '' ) eq $wanted_exe;
+
+        # Only the immediate parent if walk_back falsy
+        last unless $walk_back;
+        $curr_pid = $info->{ppid};
+        ++$levels;
+    }
+    return 0;
+}
+
+# -------------------------------------------------------------------
+# Public: runtime authorisation
+# -------------------------------------------------------------------
+sub check_authorisation_in_real_time {
+    my ( $proc, $auth ) = @_;
+
+    # Fail closed on bad input ------------------------------------------------
+    return 0 unless ref $proc eq 'HASH' && ref $auth eq 'HASH';
+
+    my $exe   = $proc->{exe} // '';
+    my $rules = $auth->{$exe} or return 0;      # no rule → deny
+
+    RULE:
+    for my $r ( @$rules ) {
+
+        # 1. UID / GID -------------------------------------------------------
+        next RULE unless _value_matches( $proc->{uid}, $r->{uid} );
+        next RULE unless _value_matches( $proc->{gid}, $r->{gid} );
+
+        # 2. Parent (optional) ----------------------------------------------
+        if ( exists $r->{ppid} ) {
+            next RULE
+              unless _parent_matches(
+                  $r->{ppid},
+                  $r->{walk_back} // 0,
+                  $proc
+              );
+        }
+
+        # 3. Everything required matched → authorise ------------------------
+        return 1;
+    }
+
+    # No rule matched → deny
+    return 0;
+}
+
 
 1;
 

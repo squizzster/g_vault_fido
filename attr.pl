@@ -533,7 +533,6 @@ sub _vl_gather_rows {
 
         for my $pat (@{ $meta->{patterns} }) {
             my @matches = ($pat =~ /[\*\?\[]/) ? map { abs_path($_) } glob($pat) : ($pat);
-            @matches = ('<none matched>') unless @matches;
             for my $cfg (@matches) {
                 push @rows, _vl_row(
                     $team, $exe_path, $pid_spec_name, $pp_path, $pp_spec_name,
