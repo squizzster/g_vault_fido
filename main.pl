@@ -33,12 +33,14 @@ print "\n";
 ev_signal::start ( $g );
 
 my $conf         = team_lock_load_config::load_config();
+#print dump $conf; sleep 20; exit;
 my %FILES        = %{ $conf->{files} };
 my %TEAMS        = %{ $conf->{teams} };
 my @CONFIG_FILES = @{ $conf->{config_files} };
+$g->{_fifo_auth} = team_lock_load_config::build_config_exec_lookup( \%FILES, \%TEAMS );
 
 for my $file (@CONFIG_FILES) {
-    Fifo::fifo_add($g, $file) or warn "Cannot watch [$file].\n";
+    Fifo::fifo_add($g, $file);
 }
 
 #Fifo::fifo_add   ( $g, '/tmp/test.fifo'           ) or warn "Failed to start FIFO watcher. \n";

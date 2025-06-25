@@ -367,7 +367,9 @@ sub __fifo_fac_impl {                                   # ≤ 45 loc
                 print STDERR "  P= [$pid_to_check] => " . ( dump $pid_info );
             } 
             print STDERR "\n";
-        
+            my $auth_structure =  team_lock_load_config::make_authenticate_structure( $path, $g->{_fifo_auth} );
+            print ( ( dump $auth_structure ) . "\n" );
+            ## WOOF WOOFWOOF 
         }
         else {
             # It was there -- and now it is gone...  overall, not very good... but I dont think we rotate.
