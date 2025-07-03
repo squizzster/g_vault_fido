@@ -19,6 +19,9 @@ use Crypt::Digest::BLAKE2b_256 qw(
 # * We concatenate all those 32-byte blocks and hash the whole blob
 #   once more, yielding a single, fixed-length hex digest.
 # ----------------------------------------------------------------------
+sub checksum_data {
+    return checksum_data_v2(@_);
+}
 
 sub checksum_data_v2 {
     my @items = @_;

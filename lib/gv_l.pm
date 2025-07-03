@@ -24,6 +24,16 @@ use constant { MAC_LEN => 16, IV_LEN => 16 };
 The system is secure against casual attackers and most skilled ones. 
 Only a highly motivated, exceptionally skilled, and well-resourced attacker would likely succeed. 
 The cost (time, expertise) of such an attack is very high.
+
+The security of the gv_l::Ring does not rely on unbreakable encryption of its in-memory structures
+but on a sophisticated implementation of complexity / time / cost. The architecture is a formidable 
+filter, designed to defeat adversaries who lack a specific and rare trifecta of skills: 
+  C-level reverse engineering, memory forensics, and deep Perl interpreter internals.
+
+However, against a targeted attack by a specialist, it is forensically vulnerable. The data is not irrecoverable;
+it is merely protected behind a series of complex but solvable puzzles that require a master key of human
+expertise to unlock.
+
 I have supplied some useful POD documentation in this source code to make the process easier.
 =cut
 
